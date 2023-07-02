@@ -56,7 +56,7 @@ const ATTACKS: [u8; 239]= [
    0, 0, 0, 0, 0, 40, 4, 34,  4,40, 0, 0, 0, 0, 0, 0,
    0, 0, 0, 0, 0, 4, 57, 50, 57, 4, 0, 0, 0, 0, 0, 0,
    34,34,34,34,34,34,50,  0, 50,34,34,34,34,34,34, 0, // Note the zero in the very middle, it basically represents the current piece that is being evaluated for attacks
-   0, 0, 0, 0, 0, 4, 56, 50, 56, 4, 0, 0, 0, 0, 0, 0, // But the piece isn't always in the middle? We can "move" it to the middle by adding 119
+   0, 0, 0, 0, 0, 4, 57, 50, 57, 4, 0, 0, 0, 0, 0, 0, // But the piece isn't always in the middle? We can "move" it to the middle by adding 119
    0, 0, 0, 0, 0, 40, 4, 34, 4, 40, 0, 0, 0, 0, 0, 0, // and then applying the difference between two squares to find the index relative to the piece in the middle
    0, 0, 0, 0, 40, 0, 0, 34, 0, 0, 40, 0, 0, 0, 0, 0,
    0, 0, 0, 40, 0, 0, 0, 34, 0, 0, 0, 40, 0, 0, 0, 0,
@@ -142,10 +142,10 @@ impl Chess {
     pub fn move_piece(&mut self, from_idx: u8, to_idx: u8) {
         // TODO: move the piece as long as the king is not in checked
         if self.is_on_board(to_idx)
-        /* && self.get_square_at(to_idx) == 0 */
+        /* && self.get_piece_at(to_idx) == 0 */
         {
-            let piece = self.get_square_at(from_idx);
-            let to_piece = self.get_square_at(to_idx);
+            let piece = self.get_piece_at(from_idx);
+            let to_piece = self.get_piece_at(to_idx);
 
             self.set_piece_at(piece, to_idx);
             self.set_piece_at(EMPTY, from_idx);
@@ -161,7 +161,7 @@ impl Chess {
         }
     }
 
-    pub fn get_square_at(&self, square_idx: u8) -> u8 {
+    pub fn get_piece_at(&self, square_idx: u8) -> u8 {
         self.board[square_idx as usize]
     }
 
@@ -185,11 +185,11 @@ impl Chess {
             let mut destination_idx = square_idx as i16 + delta as i16;
 
             while self.is_on_board(destination_idx as u8) {
-                let square = self.get_square_at(destination_idx as u8);
+                let piece = self.get_piece_at(destination_idx as u8);
 
-                if square != EMPTY {
+                if piece != EMPTY {
                     // if we encounter a friendly piece, we can't move there
-                    if square & COLOR_MASK == self.turn {
+                    if self.is_friendly(piece) {
                         break;
                     } else {
                         // if we encounter an enemy piece, we can capture it but cannot move further
@@ -205,10 +205,10 @@ impl Chess {
 
                 // TODO: loop through all the enemy pieces? - maybe do this AFTER we generate all the moves so we only loop once?
                 for idx in 0..BOARD_SIZE {
-                    let piece = self.get_square_at(idx);
+                    let piece = self.get_piece_at(idx);
 
                     // if piece is friendly, skip
-                    if piece & COLOR_MASK == self.turn || piece == EMPTY {
+                    if self.is_friendly(piece) || piece == EMPTY {
                         continue;
                     } else {
                         let king_idx = match self.turn {
@@ -265,10 +265,10 @@ impl Chess {
         } else {
             // although the king can be attacked from a particular square, we also
             // have to take into account if that piece can attack from there
-            let piece = self.get_square_at(attacker_idx);
+            let piece = self.get_piece_at(attacker_idx);
 
             // remove the color mask
-            let piece_without_color = piece ^ COLOR_MASK;
+            let piece_without_color = (piece | COLOR_MASK) ^ COLOR_MASK;
 
             // check if that piece can attack from that particular square
             if (piece_without_color & attack_bits_mask) == piece_without_color {
@@ -281,11 +281,11 @@ impl Chess {
                     let mut destination_idx = attacker_idx as i16 + delta as i16;
 
                     while self.is_on_board(destination_idx as u8) {
-                        let piece = self.get_square_at(destination_idx as u8);
+                        let piece = self.get_piece_at(destination_idx as u8);
 
                         if piece != EMPTY {
                             // if the piece is the king, then return true because the king is attacked
-                            if piece == KING && piece & COLOR_MASK == self.turn {
+                            if piece & KING == KING && self.is_friendly(piece) {
                                 return true;
                             }
                             // if its the king, then another piece is blocking the check
@@ -311,8 +311,22 @@ impl Chess {
         }
     }
 
+    /// 0 = white, 128 = black
+    pub fn set_turn(&mut self, turn: u8) {
+        if turn == WHITE {
+            self.turn = WHITE;
+        } else {
+            self.turn = BLACK;
+        }
+    }
+
     pub fn clear(&mut self) {
         *self = Self::new();
+    }
+
+    /// a piece is friendly if its color matches the current player's turn color
+    fn is_friendly(&self, piece: u8) -> bool {
+        piece & COLOR_MASK == self.turn
     }
 
     fn is_on_board(&self, square_idx: u8) -> bool {
@@ -347,6 +361,40 @@ mod bishop {
         let correct_moves = [17, 34, 51, 68, 85, 102, 119];
 
         assert!(moves.iter().eq(correct_moves.iter()));
+
+        chess.clear();
+        chess.set_turn(BLACK);
+
+        chess.set_piece_at(BISHOP, 103);
+        chess.set_piece_at(KING | BLACK, 81);
+        chess.set_piece_at(BISHOP | BLACK, 36);
+
+        let moves = chess.generate_diagonal_sliding_moves(36);
+        let correct_moves = [53, 70, 87, 51, 66, 19, 2, 21, 6];
+        assert!(moves.iter().eq(correct_moves.iter()));
+
+        chess.clear();
+        chess.set_turn(BLACK);
+
+        chess.set_piece_at(BISHOP, 103);
+        chess.set_piece_at(KING | BLACK, 81);
+        chess.set_piece_at(BISHOP | BLACK, 36);
+
+        let moves = chess.generate_diagonal_sliding_moves(36);
+        let correct_moves = [53, 70, 87, 51, 66, 19, 2, 21, 6];
+        assert!(moves.iter().eq(correct_moves.iter()));
+
+        chess.clear();
+        chess.set_turn(BLACK);
+
+        chess.set_piece_at(BISHOP, 0);
+        chess.set_piece_at(KING | BLACK, 7);
+        chess.set_piece_at(BISHOP | BLACK, 112);
+
+        let moves = chess.generate_diagonal_sliding_moves(112);
+        let correct_moves = [97, 82, 67, 52, 37, 22];
+
+        assert!(moves.iter().eq(correct_moves.iter()));
     }
 
     #[test]
@@ -378,6 +426,38 @@ mod bishop {
 
         let moves = chess.generate_diagonal_sliding_moves(67 as u8);
         assert!(moves.len() == 0);
+
+        chess.clear();
+
+        //======= BLACK =======
+        chess.set_turn(BLACK);
+
+        chess.set_piece_at(BISHOP, 0);
+        chess.set_piece_at(KING | BLACK, 17);
+        chess.set_piece_at(BISHOP | BLACK, 51);
+
+        let moves = chess.generate_diagonal_sliding_moves(51);
+        assert!(moves.len() == 0);
+
+        chess.clear();
+        chess.set_turn(BLACK);
+
+        chess.set_piece_at(BISHOP, 67);
+        chess.set_piece_at(KING | BLACK, 112);
+        chess.set_piece_at(BISHOP | BLACK, 100);
+
+        let moves = chess.generate_diagonal_sliding_moves(100);
+        assert!(moves.len() == 0);
+
+        chess.clear();
+        chess.set_turn(BLACK);
+
+        chess.set_piece_at(BISHOP, 118);
+        chess.set_piece_at(KING | BLACK, 16);
+        chess.set_piece_at(BISHOP | BLACK, 21);
+
+        let moves = chess.generate_diagonal_sliding_moves(21);
+        assert!(moves.len() == 0);
     }
 
     #[test]
@@ -404,7 +484,31 @@ mod bishop {
 
         assert!(moves.iter().eq(correct_moves.iter()));
 
-        chess.clear()
+        // ====== BLACK =====
+
+        chess.clear();
+        chess.set_turn(BLACK);
+
+        chess.set_piece_at(BISHOP, 32);
+        chess.set_piece_at(KING | BLACK, 66);
+        chess.set_piece_at(BISHOP | BLACK, 17);
+
+        let moves = chess.generate_diagonal_sliding_moves(17);
+        let correct_moves = [32];
+
+        assert!(moves.iter().eq(correct_moves.iter()));
+
+        chess.clear();
+        chess.set_turn(BLACK);
+
+        chess.set_piece_at(BISHOP, 67);
+        chess.set_piece_at(KING | BLACK, 7);
+        chess.set_piece_at(BISHOP | BLACK, 118);
+
+        let moves = chess.generate_diagonal_sliding_moves(118);
+        let correct_moves = [67];
+
+        assert!(moves.iter().eq(correct_moves.iter()));
     }
 
     #[test]
@@ -443,6 +547,33 @@ mod bishop {
         let correct_moves = [83, 100, 117, 81, 96, 49, 32, 51];
 
         assert!(moves.iter().eq(correct_moves.iter()));
+
+        // ==== BLACK ====
+        chess.clear();
+        chess.set_turn(BLACK);
+
+        chess.set_piece_at(BISHOP, 64);
+        chess.set_piece_at(KING | BLACK, 4);
+        chess.set_piece_at(PAWN | BLACK, 19);
+        chess.set_piece_at(BISHOP | BLACK, 84);
+
+        let moves = chess.generate_diagonal_sliding_moves(84);
+        let correct_moves = [101, 118, 99, 114, 67, 50, 33, 16, 69, 54, 39];
+
+        assert!(moves.iter().eq(correct_moves.iter()));
+
+        chess.clear();
+        chess.set_turn(BLACK);
+
+        chess.set_piece_at(BISHOP, 53);
+        chess.set_piece_at(KING | BLACK, 87);
+        chess.set_piece_at(PAWN | BLACK, 70);
+        chess.set_piece_at(BISHOP | BLACK, 98);
+
+        let moves = chess.generate_diagonal_sliding_moves(98);
+        let correct_moves = [115, 113, 81, 64, 83, 68, 53];
+
+        assert!(moves.iter().eq(correct_moves.iter()));
     }
 }
 
@@ -459,12 +590,15 @@ impl<'a> std::fmt::LowerHex for ByteBuf<'a> {
 
 fn main() {
     let mut chess = Chess::new();
-    chess.set_piece_at(BISHOP, 66);
-    chess.set_piece_at(KING, 17);
-    chess.set_piece_at(PAWN, 34);
-    chess.set_piece_at(BISHOP | BLACK, 51);
 
-    let moves = chess.generate_diagonal_sliding_moves(66);
+    // chess.set_turn(BLACK);
+
+    chess.set_piece_at(BISHOP, 53);
+    chess.set_piece_at(KING, 51);
+    chess.set_piece_at(PAWN, 68);
+    // chess.set_piece_at(BISHOP | BLACK, 98);
+
+    let moves = chess.generate_diagonal_sliding_moves(53);
 
     // chess.set_piece_at(BISHOP, 102);
     // chess.set_piece_at(KING, 112);
