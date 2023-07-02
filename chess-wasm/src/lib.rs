@@ -1,3 +1,4 @@
+pub mod chess;
 mod utils;
 use std::rc::{self, Rc};
 
