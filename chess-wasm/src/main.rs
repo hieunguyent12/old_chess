@@ -65,6 +65,25 @@ const ATTACKS: [u8; 239]= [
    40, 0, 0, 0, 0, 0, 0, 34,  0, 0, 0, 0, 0, 0, 40, 
 ];
 
+#[rustfmt::skip]
+const DELTAS: [i8; 239]= [
+   -17,  0,  0,  0,  0,  0,  0,-16,  0,  0,  0,  0,  0,  0,-15, 0,
+     0,-17,  0,  0,  0,  0,  0,-16,  0,  0,  0,  0,  0,-15,  0, 0,
+     0,  0,-17,  0,  0,  0,  0,-16,  0,  0,  0,  0,-15,  0,  0, 0,
+     0,  0,  0,-17,  0,  0,  0,-16,  0,  0,  0,-15,  0,  0,  0, 0,
+     0,  0,  0,  0,-17,  0,  0,-16,  0,  0,-15,  0,  0,  0,  0, 0,
+     0,  0,  0,  0,  0,-17,  0,-16,  0,-15,  0,  0,  0,  0,  0, 0,
+     0,  0,  0,  0,  0,  0,-17,-16,-15,  0,  0,  0,  0,  0,  0, 0,
+     1,  1,  1,  1,  1,  1,  1,  0, -1, -1,  -1,-1, -1, -1, -1, 0,
+     0,  0,  0,  0,  0,  0, 15, 16, 17,  0,  0,  0,  0,  0,  0, 0,
+     0,  0,  0,  0,  0, 15,  0, 16,  0, 17,  0,  0,  0,  0,  0, 0,
+     0,  0,  0,  0, 15,  0,  0, 16,  0,  0, 17,  0,  0,  0,  0, 0,
+     0,  0,  0, 15,  0,  0,  0, 16,  0,  0,  0, 17,  0,  0,  0, 0,
+     0,  0, 15,  0,  0,  0,  0, 16,  0,  0,  0,  0, 17,  0,  0, 0,
+     0, 15,  0,  0,  0,  0,  0, 16,  0,  0,  0,  0,  0, 17,  0, 0,
+    15,  0,  0,  0,  0,  0,  0, 16,  0,  0,  0,  0,  0,  0, 17
+ ];
+
 /*
   const attacks2 = [
    5,0,0,0,0,0,0,2,0,0,0,0,0,0,5,0,
@@ -256,8 +275,27 @@ impl Chess {
                 if piece_without_color == KNIGHT || piece_without_color == PAWN {
                     return true;
                 } else {
+                    // check if there is a piece standing in the way of the attack
+                    let delta = DELTAS[diff as usize];
+
+                    let mut destination_idx = attacker_idx as i16 + delta as i16;
+
+                    while self.is_on_board(destination_idx as u8) {
+                        let piece = self.get_square_at(destination_idx as u8);
+
+                        if piece != EMPTY {
+                            // if the piece is the king, then return true because the king is attacked
+                            if piece == KING && piece & COLOR_MASK == self.turn {
+                                return true;
+                            }
+                            // if its the king, then another piece is blocking the check
+                            return false;
+                        }
+
+                        destination_idx += delta as i16;
+                    }
+
                     return true;
-                    // TODO: check if there is a piece standing in the way of the attack
                 }
             } else {
                 return false;
@@ -368,6 +406,44 @@ mod bishop {
 
         chess.clear()
     }
+
+    #[test]
+    fn bishop_can_move_freely_if_king_is_shielded_from_check() {
+        let mut chess = Chess::new();
+        chess.set_piece_at(BISHOP, 51);
+        chess.set_piece_at(KING, 7);
+        chess.set_piece_at(PAWN, 37);
+        chess.set_piece_at(BISHOP | BLACK, 67);
+
+        let moves = chess.generate_diagonal_sliding_moves(51);
+        let correct_moves = [68, 85, 102, 119, 66, 81, 96, 34, 17, 0, 36, 21, 6];
+
+        assert!(moves.iter().eq(correct_moves.iter()));
+
+        chess.clear();
+
+        chess.set_piece_at(BISHOP, 118);
+        chess.set_piece_at(KING, 119);
+        chess.set_piece_at(PAWN, 102);
+        chess.set_piece_at(BISHOP | BLACK, 85);
+
+        let moves = chess.generate_diagonal_sliding_moves(118);
+        let correct_moves = [101, 84, 67, 50, 33, 16, 103];
+
+        assert!(moves.iter().eq(correct_moves.iter()));
+
+        chess.clear();
+
+        chess.set_piece_at(BISHOP, 66);
+        chess.set_piece_at(KING, 17);
+        chess.set_piece_at(PAWN, 34);
+        chess.set_piece_at(BISHOP | BLACK, 51);
+
+        let moves = chess.generate_diagonal_sliding_moves(66);
+        let correct_moves = [83, 100, 117, 81, 96, 49, 32, 51];
+
+        assert!(moves.iter().eq(correct_moves.iter()));
+    }
 }
 
 struct ByteBuf<'a>(&'a [u8]);
@@ -383,12 +459,19 @@ impl<'a> std::fmt::LowerHex for ByteBuf<'a> {
 
 fn main() {
     let mut chess = Chess::new();
+    chess.set_piece_at(BISHOP, 66);
+    chess.set_piece_at(KING, 17);
+    chess.set_piece_at(PAWN, 34);
+    chess.set_piece_at(BISHOP | BLACK, 51);
 
-    chess.set_piece_at(BISHOP, 99);
-    chess.set_piece_at(KING, 37);
-    chess.set_piece_at(BISHOP | BLACK, 54);
+    let moves = chess.generate_diagonal_sliding_moves(66);
 
-    let moves = chess.generate_diagonal_sliding_moves(99 as u8);
+    // chess.set_piece_at(BISHOP, 102);
+    // chess.set_piece_at(KING, 112);
+    // chess.set_piece_at(PAWN, 97);
+    // chess.set_piece_at(BISHOP | BLACK, 82);
+
+    // let moves = chess.generate_diagonal_sliding_moves(102 as u8);
 
     println!("{:?}", moves);
 }
