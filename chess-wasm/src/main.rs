@@ -1,7 +1,7 @@
 const EMPTY: u8 = 0; //         00000000
-const PAWN: i8 = 1; //          00000001
+const PAWN: u8 = 1; //          00000001
 const ROOK: i8 = 2; //          00000010
-const KNIGHT: i8 = 4; //        00000100
+const KNIGHT: u8 = 4; //        00000100
 const BISHOP: u8 = 8; //        00001000
 const KING: u8 = 16; //         00010000
 const QUEEN: i8 = 32; //        00100000
@@ -32,7 +32,7 @@ const BISHOP_DELTAS: [i8; 4] = [17, 15, -17, -15];
     00010000
     00111000
 
-    queen, bishop, pawn = 41 = 00101001
+    queen, bishop, pawn, king = 57  = 00111001
 
     queen, bishop can move diagonally to any square = 40 = 00101000
 
@@ -54,7 +54,7 @@ const ATTACKS: [u8; 239]= [
    0, 0, 0, 40, 0, 0, 0, 34,  0, 0, 0,40, 0, 0, 0, 0,
    0, 0, 0, 0, 40, 0, 0, 34,  0, 0,40, 0, 0, 0, 0, 0,
    0, 0, 0, 0, 0, 40, 4, 34,  4,40, 0, 0, 0, 0, 0, 0,
-   0, 0, 0, 0, 0, 4, 41, 50, 41, 4, 0, 0, 0, 0, 0, 0,
+   0, 0, 0, 0, 0, 4, 57, 50, 57, 4, 0, 0, 0, 0, 0, 0,
    34,34,34,34,34,34,50,  0, 50,34,34,34,34,34,34, 0, // Note the zero in the very middle, it basically represents the current piece that is being evaluated for attacks
    0, 0, 0, 0, 0, 4, 56, 50, 56, 4, 0, 0, 0, 0, 0, 0, // But the piece isn't always in the middle? We can "move" it to the middle by adding 119
    0, 0, 0, 0, 0, 40, 4, 34, 4, 40, 0, 0, 0, 0, 0, 0, // and then applying the difference between two squares to find the index relative to the piece in the middle
@@ -241,8 +241,6 @@ impl Chess {
 
         let attack_bits_mask = ATTACKS[diff as usize];
 
-        // TODO: check if there is a piece standing in the way of the attack
-
         if attack_bits_mask == 0 {
             return false;
         } else {
@@ -253,8 +251,17 @@ impl Chess {
             // remove the color mask
             let piece_without_color = piece ^ COLOR_MASK;
 
-            // then apply the attacks bits mask
-            return (piece_without_color & attack_bits_mask) == piece_without_color;
+            // check if that piece can attack from that particular square
+            if (piece_without_color & attack_bits_mask) == piece_without_color {
+                if piece_without_color == KNIGHT || piece_without_color == PAWN {
+                    return true;
+                } else {
+                    return true;
+                    // TODO: check if there is a piece standing in the way of the attack
+                }
+            } else {
+                return false;
+            }
         }
     }
 
