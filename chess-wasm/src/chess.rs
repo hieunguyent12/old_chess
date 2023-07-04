@@ -158,6 +158,7 @@ impl Chess {
                 piece = piece | MOVED_MASK;
                 // if it has moved 2 squares, update en passant pawns
                 if to_idx.abs_diff(from_idx) == 32 {
+                    // TODO: refactor this stuff
                     let left_idx = to_idx - 1;
                     let right_idx = to_idx + 1;
 
@@ -212,7 +213,7 @@ impl Chess {
     }
 
     /// Return the piece on the square
-    pub fn get(&self, square_idx: PieceIndex) -> PieceIndex {
+    fn get(&self, square_idx: PieceIndex) -> PieceIndex {
         self.board[square_idx as usize]
     }
 
@@ -222,7 +223,7 @@ impl Chess {
             self.kings.white = square_idx;
         }
 
-        if piece == KING | BLACK {
+        if piece == BLACK_KING {
             self.kings.black = square_idx;
         }
 
@@ -377,7 +378,7 @@ impl Chess {
                 let piece = self.get(attacker_idx);
 
                 // remove the color mask
-                let piece_without_color = (piece | COLOR_MASK) ^ COLOR_MASK;
+                let piece_without_color = self.remove_color(piece);
 
                 // check if that piece can attack from that particular square
                 if (piece_without_color & attack_bits_mask) == piece_without_color {
@@ -385,10 +386,11 @@ impl Chess {
                         return true;
                     } else if piece_without_color == PAWN {
                         let pawn = piece;
-                        let black_pawn = PAWN | BLACK;
+
                         // if it is black, it can only attack down
-                        if pawn == black_pawn {
-                            if pawn & attack_bits_mask == black_pawn {
+                        // TODO: handle moved pawn
+                        if pawn == BLACK_PAWN {
+                            if pawn & attack_bits_mask == BLACK_PAWN {
                                 return true;
                             }
                         } else {
@@ -413,7 +415,7 @@ impl Chess {
                                 if piece & KING == KING && self.is_friendly(piece) {
                                     return true;
                                 }
-                                // if its the king, then another piece is blocking the check
+                                // if it is NOT the king, then another piece is blocking the check
                                 return false;
                             }
 
@@ -431,11 +433,11 @@ impl Chess {
         return false;
     }
 
-    pub fn current_turn(&self) {
+    pub fn turn(&self) -> char {
         match self.turn {
-            0 => {}
-            1 => {}
-            _ => panic!("invalid turn"),
+            WHITE => 'w',
+            BLACK => 'b',
+            _ => panic!("Unknown turn"),
         }
     }
 
@@ -453,9 +455,12 @@ impl Chess {
     }
 
     fn remove_color(&self, piece: PieceType) -> PieceType {
-        (piece | COLOR_MASK) ^ COLOR_MASK
+        self.remove_mask(piece, COLOR_MASK)
     }
 
+    fn remove_mask(&self, piece: PieceType, mask: u8) -> u8 {
+        (piece | mask) ^ mask
+    }
     /// a piece is friendly if its color matches the current player's turn color
     fn is_friendly(&self, piece: PieceType) -> bool {
         piece & COLOR_MASK == self.turn
