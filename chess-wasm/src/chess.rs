@@ -1,8 +1,10 @@
 use crate::chess::Piece::*;
+use wasm_bindgen::prelude::*;
 
 const BOARD_SIZE: u8 = 128;
 const COLOR_MASK: u8 = 128; // 10000000
 const MOVED_MASK: u8 = 2; // 00000010
+const EN_PASSANT_SQUARE: u8 = 64; // 01000000
 
 // use | to make a piece black or white
 // use & to check if a piece is black or white
@@ -12,6 +14,7 @@ pub const BLACK: u8 = 128;
 #[allow(non_snake_case)]
 pub mod Piece {
     use crate::chess::BLACK;
+    use wasm_bindgen::prelude::*;
 
     pub type PieceIndex = u8;
     pub type PieceType = u8;
@@ -124,7 +127,7 @@ struct King {
 }
 
 pub struct Chess {
-    board: [PieceType; BOARD_SIZE as usize],
+    pub board: [PieceType; BOARD_SIZE as usize],
 
     /// 0 = white, 128 = black
     turn: u8,
@@ -146,12 +149,53 @@ impl Chess {
     }
 
     pub fn move_piece(&mut self, from_idx: PieceIndex, to_idx: PieceIndex) {
-        // TODO: move the piece as long as the king is not in checked
-        if self.is_on_board(to_idx)
-        /* && self.get(to_idx) == 0 */
-        {
-            let piece = self.get(from_idx);
+        if self.is_on_board(to_idx) {
+            let mut piece = self.get(from_idx);
             let to_piece = self.get(to_idx);
+
+            if self.remove_color(piece) == PAWN {
+                // set the pawn to moved
+                piece = piece | MOVED_MASK;
+                // if it has moved 2 squares, update en passant pawns
+                if to_idx.abs_diff(from_idx) == 32 {
+                    let left_idx = to_idx - 1;
+                    let right_idx = to_idx + 1;
+
+                    if self.is_on_board(left_idx) {
+                        let piece = self.get(left_idx);
+                        let is_enemy = !self.is_friendly(piece);
+                        let piece = self.remove_color(piece);
+
+                        // check if the piece is an enemy pawn
+                        if (piece | MOVED_MASK) ^ MOVED_MASK == PAWN && is_enemy {
+                            let idx = match to_idx {
+                                i if i > from_idx => from_idx + 16,
+                                i if i < from_idx => from_idx - 16,
+                                _ => panic!("could not calculate en passant squares"),
+                            };
+
+                            self.set(EMPTY | EN_PASSANT_SQUARE, idx);
+                        }
+                    }
+
+                    if self.is_on_board(right_idx) {
+                        let piece = self.get(right_idx);
+                        let is_enemy = !self.is_friendly(piece);
+
+                        let piece = self.remove_color(piece);
+
+                        // check if the piece is an enemy pawn
+                        if (piece | MOVED_MASK) ^ MOVED_MASK == PAWN && is_enemy {
+                            let idx = match to_idx {
+                                i if i > from_idx => from_idx + 16,
+                                i if i < from_idx => from_idx - 16,
+                                _ => panic!("could not calculate en passant squares"),
+                            };
+                            self.set(EMPTY | EN_PASSANT_SQUARE, idx);
+                        }
+                    }
+                }
+            }
 
             self.set(piece, to_idx);
             self.set(Piece::EMPTY, from_idx);
@@ -195,50 +239,22 @@ impl Chess {
             _ => vec![],
         };
 
-        let mut legalMoves: Vec<u8> = vec![];
+        let mut legal_moves: Vec<u8> = vec![];
 
         for idx in moves {
             let destination_idx = idx;
             // play the move
             self.move_piece(square_idx, destination_idx as u8);
 
-            let mut in_check = false;
-
-            // TODO: loop through all the enemy pieces? - maybe do this AFTER we generate all the moves so we only loop once?
-            for idx in 0..BOARD_SIZE {
-                let piece = self.get(idx);
-
-                // if piece is friendly, skip
-                if self.is_friendly(piece) || piece == EMPTY {
-                    continue;
-                } else {
-                    let king_idx = match self.turn {
-                        WHITE => self.kings.white,
-                        BLACK => self.kings.black,
-                        _ => panic!("Turn cannot be determined when checking if king is attacked"),
-                    };
-
-                    if self.is_attacked(king_idx, idx) {
-                        println!("King is attacked!");
-                        println!(
-                            "Enemy: {} - Destination: {} - From: {}",
-                            idx, destination_idx, square_idx
-                        );
-                        in_check = true;
-                        break;
-                    }
-                }
+            if !self.in_check() {
+                legal_moves.push(destination_idx);
             }
 
             // revert the move
             self.undo();
-
-            if !in_check {
-                legalMoves.push(destination_idx);
-            }
         }
 
-        legalMoves
+        legal_moves
     }
 
     pub fn generate_pawn_moves(&mut self, square_idx: PieceIndex) -> Vec<u8> {
@@ -254,6 +270,8 @@ impl Chess {
             _ => panic!("piece is not a pawn"),
         };
 
+        let mut can_move_forward = true;
+
         for delta in deltas {
             if delta == 0 {
                 continue;
@@ -263,7 +281,28 @@ impl Chess {
             let destination_idx = destination_idx as u8;
 
             if self.is_on_board(destination_idx) {
-                moves.push(destination_idx);
+                let piece = self.get(destination_idx);
+
+                // is it a diagonal move?
+                if delta % 2 != 0 {
+                    let is_enemy = !self.is_friendly(piece);
+                    // if it is, is there an enemy piece it can capture?
+                    if piece != EMPTY && is_enemy {
+                        moves.push(destination_idx);
+                    } else if piece == EN_PASSANT_SQUARE {
+                        // en passant
+                        moves.push(destination_idx);
+                    }
+                } else {
+                    // pawn can only forward if it is not blocked by any piece
+                    if piece != EMPTY {
+                        can_move_forward = false;
+                    }
+
+                    if can_move_forward {
+                        moves.push(destination_idx);
+                    }
+                }
             }
         }
 
@@ -309,68 +348,87 @@ impl Chess {
         }
     }
 
-    pub fn is_attacked(&self, defender_idx: PieceIndex, attacker_idx: PieceIndex) -> bool {
-        let diff = (defender_idx as i16 - attacker_idx as i16) + 119;
+    /// Return true or false if the color to move is in check
+    pub fn in_check(&self) -> bool {
+        let king_idx = match self.turn {
+            WHITE => self.kings.white,
+            BLACK => self.kings.black,
+            _ => panic!("Turn cannot be determined when checking if king is attacked"),
+        };
 
-        let attack_bits_mask = ATTACKS[diff as usize];
+        for idx in 0..BOARD_SIZE {
+            let piece = self.get(idx);
+            let attacker_idx = idx;
+            let defender_idx = king_idx;
 
-        if attack_bits_mask == 0 {
-            return false;
-        } else {
-            // although the king can be attacked from a particular square, we also
-            // have to take into account if that piece can attack from there
-            let piece = self.get(attacker_idx);
+            if self.is_friendly(piece) || piece == EMPTY {
+                continue;
+            }
 
-            // remove the color mask
-            let piece_without_color = (piece | COLOR_MASK) ^ COLOR_MASK;
+            let diff = (defender_idx as i16 - attacker_idx as i16) + 119;
 
-            // check if that piece can attack from that particular square
-            if (piece_without_color & attack_bits_mask) == piece_without_color {
-                if piece_without_color == KNIGHT {
-                    return true;
-                } else if piece_without_color == PAWN {
-                    let pawn = piece;
-                    let black_pawn = PAWN | BLACK;
-                    // if it is black, it can only attack down
-                    if pawn == black_pawn {
-                        if pawn & attack_bits_mask == black_pawn {
-                            return true;
-                        }
-                    } else {
-                        // if the pawn is white, it can only attack up
-                        if pawn & attack_bits_mask == PAWN {
-                            return true;
-                        }
-                    }
+            let attack_bits_mask = ATTACKS[diff as usize];
 
-                    return false;
-                } else {
-                    // check if there is a piece standing in the way of the attack
-                    let delta = DELTAS[diff as usize];
+            if attack_bits_mask == 0 {
+                return false;
+            } else {
+                // although the king can be attacked from a particular square, we also
+                // have to take into account if that piece can attack from there
+                let piece = self.get(attacker_idx);
 
-                    let mut destination_idx = attacker_idx as i16 + delta as i16;
+                // remove the color mask
+                let piece_without_color = (piece | COLOR_MASK) ^ COLOR_MASK;
 
-                    while self.is_on_board(destination_idx as PieceIndex) {
-                        let piece = self.get(destination_idx as PieceIndex);
-
-                        if piece != EMPTY {
-                            // if the piece is the king, then return true because the king is attacked
-                            if piece & KING == KING && self.is_friendly(piece) {
+                // check if that piece can attack from that particular square
+                if (piece_without_color & attack_bits_mask) == piece_without_color {
+                    if piece_without_color == KNIGHT {
+                        return true;
+                    } else if piece_without_color == PAWN {
+                        let pawn = piece;
+                        let black_pawn = PAWN | BLACK;
+                        // if it is black, it can only attack down
+                        if pawn == black_pawn {
+                            if pawn & attack_bits_mask == black_pawn {
                                 return true;
                             }
-                            // if its the king, then another piece is blocking the check
-                            return false;
+                        } else {
+                            // if the pawn is white, it can only attack up
+                            if pawn & attack_bits_mask == PAWN {
+                                return true;
+                            }
                         }
 
-                        destination_idx += delta as i16;
-                    }
+                        return false;
+                    } else {
+                        // check if there is a piece standing in the way of the attack
+                        let delta = DELTAS[diff as usize];
 
-                    return true;
+                        let mut destination_idx = attacker_idx as i16 + delta as i16;
+
+                        while self.is_on_board(destination_idx as PieceIndex) {
+                            let piece = self.get(destination_idx as PieceIndex);
+
+                            if piece != EMPTY {
+                                // if the piece is the king, then return true because the king is attacked
+                                if piece & KING == KING && self.is_friendly(piece) {
+                                    return true;
+                                }
+                                // if its the king, then another piece is blocking the check
+                                return false;
+                            }
+
+                            destination_idx += delta as i16;
+                        }
+
+                        return true;
+                    }
+                } else {
+                    return false;
                 }
-            } else {
-                return false;
             }
         }
+
+        return false;
     }
 
     pub fn current_turn(&self) {
@@ -662,30 +720,30 @@ mod pawn {
         let mut chess = Chess::new();
 
         chess.set(Piece::BLACK_PAWN, 98);
-        let moves = chess.generate_pawn_moves(98);
-        let correct_moves = [114, 115, 113];
+        let moves = chess.moves(98);
+        let correct_moves = [114];
 
         assert!(moves.iter().eq(correct_moves.iter()));
 
         chess.clear();
 
         chess.set(Piece::BLACK_PAWN, 2);
-        let moves = chess.generate_pawn_moves(2);
-        let correct_moves = [18, 34, 19, 17];
+        let moves = chess.moves(2);
+        let correct_moves = [18, 34];
         assert!(moves.iter().eq(correct_moves.iter()));
 
         chess.clear();
 
         chess.set(Piece::PAWN, 34);
-        let moves = chess.generate_pawn_moves(34);
-        let correct_moves = [18, 2, 17, 19];
+        let moves = chess.moves(34);
+        let correct_moves = [18, 2];
         assert!(moves.iter().eq(correct_moves.iter()));
 
         chess.clear();
 
         chess.set(Piece::PAWN, 23);
-        let moves = chess.generate_pawn_moves(23);
-        let correct_moves = [7, 6];
+        let moves = chess.moves(23);
+        let correct_moves = [7];
         assert!(moves.iter().eq(correct_moves.iter()));
     }
 }
