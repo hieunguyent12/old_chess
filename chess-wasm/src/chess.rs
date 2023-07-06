@@ -3,7 +3,7 @@ use wasm_bindgen::prelude::*;
 
 const BOARD_SIZE: u8 = 128;
 const COLOR_MASK: u8 = 128; // 10000000
-const MOVED_MASK: u8 = 2; // 00000010
+const MOVED_MASK: u8 = 64; // 00001000
 const EN_PASSANT_SQUARE: u8 = 64; // 01000000
 
 // use | to make a piece black or white
@@ -13,15 +13,16 @@ pub const BLACK: u8 = 128;
 
 #[allow(non_snake_case)]
 pub mod Piece {
-    use crate::chess::BLACK;
+    use crate::chess::*;
     use wasm_bindgen::prelude::*;
 
     pub type PieceIndex = u8;
     pub type PieceType = u8;
 
     pub const EMPTY: PieceType = 0; //         00000000
-    pub const MOVED_PAWN: PieceType = 3; //    00000011
+    pub const MOVED_PAWN: PieceType = PAWN | MOVED_MASK; //    00000011
     pub const MOVED_BLACK_PAWN: PieceType = MOVED_PAWN | BLACK; // 10000011
+    pub const MOVED_KING: PieceType = KING | MOVED_MASK;
 
     pub const PAWN: PieceType = 1; //          00000001   Moved pawn: 00000011
     pub const ROOK: PieceType = 2; //          00000010
@@ -43,6 +44,11 @@ const BLACK_PAWN_DELTAS: [i8; 4] = [16, 32, 17, 15];
 const MOVED_WHITE_PAWN_DELTAS: [i8; 4] = [-16, 0, -17, -15];
 const MOVED_BLACK_PAWN_DELTAS: [i8; 4] = [16, 0, 17, 15];
 const BISHOP_DELTAS: [i8; 4] = [17, 15, -17, -15];
+const ROOK_DELTAS: [i8; 4] = [16, -16, 1, -1];
+const QUEEN_DELTAS: [i8; 8] = [16, -16, 1, -1, 17, 15, -17, -15];
+const KNIGHT_DELTAS: [i8; 8] = [14, 31, 18, 33, -14, -31, -18, -33];
+const KING_DELTAS: [i8; 10] = [1, 16, 17, 15, -1, -16, -17, -15, 2, -2];
+const MOVED_KING_DELTAS: [i8; 8] = [1, 16, 17, 15, -1, -16, -17, -15];
 
 // why does it have 239 items?
 // because of how the indexes of the squares on the real board are laid out due to the fact that
@@ -55,13 +61,13 @@ const BISHOP_DELTAS: [i8; 4] = [17, 15, -17, -15];
     queen, bishop, king = 56
 
     queen, bishop, white pawn, king = 57  = 00111001
-    queen, bishop, black pawn, king = 185
+    queen, bishop, black pawn, king = 185 = 10111001
 
     00100000
     00001000
     10000001
     00010000
-    10111001
+
 
 
     queen, bishop can move diagonally to any square = 40 = 00101000
@@ -104,7 +110,7 @@ const DELTAS: [i8; 239]= [
      0,  0,  0,  0,-17,  0,  0,-16,  0,  0,-15,  0,  0,  0,  0, 0,
      0,  0,  0,  0,  0,-17,  0,-16,  0,-15,  0,  0,  0,  0,  0, 0,
      0,  0,  0,  0,  0,  0,-17,-16,-15,  0,  0,  0,  0,  0,  0, 0,
-     1,  1,  1,  1,  1,  1,  1,  0, -1, -1,  -1,-1, -1, -1, -1, 0,
+    -1, -1, -1, -1, -1, -1, -1,  0,  1,  1,  1,  1,  1,  1,  1, 0,
      0,  0,  0,  0,  0,  0, 15, 16, 17,  0,  0,  0,  0,  0,  0, 0,
      0,  0,  0,  0,  0, 15,  0, 16,  0, 17,  0,  0,  0,  0,  0, 0,
      0,  0,  0,  0, 15,  0,  0, 16,  0,  0, 17,  0,  0,  0,  0, 0,
@@ -114,14 +120,16 @@ const DELTAS: [i8; 239]= [
     15,  0,  0,  0,  0,  0,  0, 16,  0,  0,  0,  0,  0,  0, 17
  ];
 
-struct History {
+struct Move {
     from_idx: PieceIndex,
     to_idx: PieceIndex,
     from_piece: PieceType,
     to_piece: PieceType,
+    is_castling: bool,
 }
 
-struct King {
+#[derive(Debug)]
+pub struct King {
     white: PieceIndex,
     black: PieceIndex,
 }
@@ -132,10 +140,10 @@ pub struct Chess {
     /// 0 = white, 128 = black
     turn: u8,
 
-    history: Vec<History>,
+    history: Vec<Move>,
 
     /// the kings' indices on the board
-    kings: King,
+    pub kings: King,
 }
 
 impl Chess {
@@ -152,6 +160,14 @@ impl Chess {
         if self.is_on_board(to_idx) {
             let mut piece = self.get(from_idx);
             let to_piece = self.get(to_idx);
+
+            let mut player_move = Move {
+                from_idx,
+                to_idx,
+                from_piece: self.get(from_idx),
+                to_piece,
+                is_castling: false,
+            };
 
             if self.remove_color(piece) == PAWN {
                 // set the pawn to moved
@@ -196,17 +212,49 @@ impl Chess {
                         }
                     }
                 }
+            } else if self.remove_color(piece) == ROOK {
+                piece = piece | MOVED_MASK;
+            } else if self.remove_color(piece) == KING {
+                let king_side = to_idx as i8 - from_idx as i8 == 2;
+                let queen_side = to_idx as i8 - from_idx as i8 == -2;
+
+                if piece == KING {
+                    self.kings.white = to_idx;
+                }
+
+                if piece == BLACK_KING {
+                    self.kings.black = to_idx;
+                }
+
+                // TODO: cannot pass through a check
+                if king_side {
+                    self.set(Piece::ROOK | self.turn, to_idx - 1);
+                    self.set(Piece::EMPTY, to_idx + 1);
+                    player_move.is_castling = true;
+                } else if queen_side {
+                    self.set(Piece::ROOK | self.turn, to_idx + 1);
+                    self.set(Piece::EMPTY, to_idx - 2);
+                    player_move.is_castling = true;
+                } else {
+                    piece = piece | MOVED_MASK;
+                }
+            } else if self.remove_color(piece) == MOVED_KING {
+                let piece = self.remove_mask(piece, MOVED_MASK);
+
+                // update the king's position
+                if piece == KING {
+                    self.kings.white = to_idx;
+                }
+
+                if piece == BLACK_KING {
+                    self.kings.black = to_idx;
+                }
             }
 
             self.set(piece, to_idx);
             self.set(Piece::EMPTY, from_idx);
 
-            self.history.push(History {
-                from_idx,
-                to_idx,
-                from_piece: piece,
-                to_piece,
-            })
+            self.history.push(player_move)
         } else {
             // panic!("illegal move!")
         }
@@ -236,7 +284,12 @@ impl Chess {
         let moves = match self.remove_color(piece) {
             PAWN => self.generate_pawn_moves(square_idx),
             MOVED_PAWN => self.generate_pawn_moves(square_idx),
-            BISHOP => self.generate_diagonal_sliding_moves(square_idx),
+            BISHOP => self.generate_sliding_moves(square_idx, BISHOP_DELTAS.to_vec()),
+            ROOK => self.generate_sliding_moves(square_idx, ROOK_DELTAS.to_vec()),
+            QUEEN => self.generate_sliding_moves(square_idx, QUEEN_DELTAS.to_vec()),
+            KNIGHT => self.generate_knight_moves(square_idx),
+            KING => self.generate_king_moves(square_idx, KING_DELTAS.to_vec()),
+            MOVED_KING => self.generate_king_moves(square_idx, MOVED_KING_DELTAS.to_vec()),
             _ => vec![],
         };
 
@@ -310,10 +363,111 @@ impl Chess {
         moves
     }
 
-    pub fn generate_diagonal_sliding_moves(&mut self, square_idx: PieceIndex) -> Vec<u8> {
+    pub fn generate_king_moves(&mut self, square_idx: PieceIndex, deltas: Vec<i8>) -> Vec<u8> {
+        let mut moves: Vec<PieceIndex> = vec![];
+        let mut can_castle = true;
+
+        for delta in deltas {
+            // convert to i16 to prevent overflow
+            let destination_idx = square_idx as i16 + delta as i16;
+
+            if self.is_on_board(destination_idx as u8) {
+                let piece = self.get(destination_idx as PieceIndex);
+
+                if piece != EMPTY && self.is_friendly(piece) {
+                    continue;
+                }
+
+                if piece == EMPTY {
+                    let king_side = destination_idx as i8 - square_idx as i8 == 2 && can_castle;
+                    let queen_side = destination_idx as i8 - square_idx as i8 == -2 && can_castle;
+
+                    if king_side {
+                        let piece = self.get(destination_idx as PieceIndex + 1);
+                        let mut is_checked = false;
+                        let mut idx = square_idx;
+
+                        for _ in 0..2 {
+                            // let piece = self.get(idx);
+
+                            if self.is_attacked(idx) {
+                                is_checked = true;
+                                can_castle = false;
+                            }
+
+                            idx += 1;
+                        }
+
+                        if piece != EMPTY
+                            && self.remove_color(piece) == ROOK
+                            && self.is_friendly(piece)
+                            && !is_checked
+                        {
+                            moves.push(destination_idx as PieceIndex);
+                        }
+                    } else if queen_side {
+                        let piece = self.get(destination_idx as PieceIndex - 2);
+                        let mut is_checked = false;
+                        let mut idx = square_idx;
+
+                        for _ in 0..2 {
+                            // let piece = self.get(idx);
+
+                            if self.is_attacked(idx) {
+                                is_checked = true;
+                                can_castle = false;
+                            }
+
+                            idx -= 1;
+                        }
+
+                        if piece != EMPTY
+                            && self.remove_color(piece) == ROOK
+                            && self.is_friendly(piece)
+                            && !is_checked
+                        {
+                            moves.push(destination_idx as PieceIndex);
+                        }
+                    } else {
+                        let king_side = destination_idx as i8 - square_idx as i8 == 2;
+                        let queen_side = destination_idx as i8 - square_idx as i8 == -2;
+
+                        if !king_side && !queen_side {
+                            moves.push(destination_idx as PieceIndex);
+                        }
+                    }
+                }
+            }
+        }
+
+        moves
+    }
+
+    pub fn generate_knight_moves(&mut self, square_idx: PieceIndex) -> Vec<u8> {
         let mut moves: Vec<PieceIndex> = vec![];
 
-        for delta in BISHOP_DELTAS {
+        for delta in KNIGHT_DELTAS {
+            // convert to i16 to prevent overflow
+            let destination_idx = square_idx as i16 + delta as i16;
+
+            if self.is_on_board(destination_idx as u8) {
+                let piece = self.get(destination_idx as PieceIndex);
+
+                if piece != EMPTY && self.is_friendly(piece) {
+                    continue;
+                }
+
+                moves.push(destination_idx as PieceIndex);
+            }
+        }
+
+        moves
+    }
+
+    pub fn generate_sliding_moves(&mut self, square_idx: PieceIndex, deltas: Vec<i8>) -> Vec<u8> {
+        let mut moves: Vec<PieceIndex> = vec![];
+
+        for delta in deltas {
             // convert to i16 to prevent overflow
             let mut destination_idx = square_idx as i16 + delta as i16;
 
@@ -343,6 +497,34 @@ impl Chess {
 
     pub fn undo(&mut self) {
         if let Some(player_move) = self.history.pop() {
+            if player_move.is_castling {
+                let Move {
+                    to_idx, from_idx, ..
+                } = player_move;
+
+                let king_side = to_idx as i8 - from_idx as i8 == 2;
+                let queen_side = to_idx as i8 - from_idx as i8 == -2;
+
+                if king_side {
+                    self.set(ROOK | self.turn, to_idx + 1);
+                } else if queen_side {
+                    self.set(ROOK | self.turn, to_idx - 2);
+                }
+            }
+
+            let piece = self.remove_color(player_move.from_piece);
+            if piece == KING || piece == MOVED_KING {
+                let piece = self.remove_mask(piece, MOVED_MASK);
+
+                if piece == KING {
+                    self.kings.white = player_move.from_idx;
+                }
+
+                if piece == BLACK_KING {
+                    self.kings.black = player_move.from_idx;
+                }
+            }
+
             // move the pieces back to its original square
             self.set(player_move.from_piece, player_move.from_idx);
             self.set(player_move.to_piece, player_move.to_idx);
@@ -357,10 +539,15 @@ impl Chess {
             _ => panic!("Turn cannot be determined when checking if king is attacked"),
         };
 
+        return self.is_attacked(king_idx);
+    }
+
+    pub fn is_attacked(&self, square_idx: PieceIndex) -> bool {
+        let mut is_attacked = false;
         for idx in 0..BOARD_SIZE {
             let piece = self.get(idx);
             let attacker_idx = idx;
-            let defender_idx = king_idx;
+            let defender_idx = square_idx;
 
             if self.is_friendly(piece) || piece == EMPTY {
                 continue;
@@ -370,37 +557,21 @@ impl Chess {
 
             let attack_bits_mask = ATTACKS[diff as usize];
 
-            if attack_bits_mask == 0 {
-                return false;
-            } else {
+            if attack_bits_mask != 0 {
                 // although the king can be attacked from a particular square, we also
                 // have to take into account if that piece can attack from there
                 let piece = self.get(attacker_idx);
 
                 // remove the color mask
-                let piece_without_color = self.remove_color(piece);
+                let original_piece = self.remove_mask(self.remove_color(piece), MOVED_MASK);
 
                 // check if that piece can attack from that particular square
-                if (piece_without_color & attack_bits_mask) == piece_without_color {
-                    if piece_without_color == KNIGHT {
+                if (original_piece & attack_bits_mask) == original_piece {
+                    if original_piece == KNIGHT {
                         return true;
-                    } else if piece_without_color == PAWN {
-                        let pawn = piece;
-
-                        // if it is black, it can only attack down
-                        // TODO: handle moved pawn
-                        if pawn == BLACK_PAWN {
-                            if pawn & attack_bits_mask == BLACK_PAWN {
-                                return true;
-                            }
-                        } else {
-                            // if the pawn is white, it can only attack up
-                            if pawn & attack_bits_mask == PAWN {
-                                return true;
-                            }
-                        }
-
-                        return false;
+                    } else if original_piece == PAWN {
+                        let piece = self.remove_mask(piece, MOVED_MASK);
+                        is_attacked = piece & attack_bits_mask == piece;
                     } else {
                         // check if there is a piece standing in the way of the attack
                         let delta = DELTAS[diff as usize];
@@ -411,26 +582,21 @@ impl Chess {
                             let piece = self.get(destination_idx as PieceIndex);
 
                             if piece != EMPTY {
-                                // if the piece is the king, then return true because the king is attacked
-                                if piece & KING == KING && self.is_friendly(piece) {
-                                    return true;
+                                if piece == self.get(defender_idx) && self.is_friendly(piece) {
+                                    is_attacked = true;
+                                } else {
+                                    // if there is a piece standing in the way, there is no check
+                                    break;
                                 }
-                                // if it is NOT the king, then another piece is blocking the check
-                                return false;
                             }
 
                             destination_idx += delta as i16;
                         }
-
-                        return true;
                     }
-                } else {
-                    return false;
                 }
             }
         }
-
-        return false;
+        return is_attacked;
     }
 
     pub fn turn(&self) -> char {
@@ -485,7 +651,7 @@ mod bishop {
         chess.set(KING, 55);
         chess.set(BISHOP | BLACK, 86);
 
-        let moves = chess.generate_diagonal_sliding_moves(52);
+        let moves = chess.moves(52);
         let correct_moves = [69, 86, 67, 82, 97, 112, 35, 18, 1, 37, 22, 7];
 
         assert!(moves.iter().eq(correct_moves.iter()));
@@ -496,7 +662,7 @@ mod bishop {
         chess.set(KING, 1);
         chess.set(BISHOP | BLACK, 7);
 
-        let moves = chess.generate_diagonal_sliding_moves(0);
+        let moves = chess.moves(0);
         let correct_moves = [17, 34, 51, 68, 85, 102, 119];
 
         assert!(moves.iter().eq(correct_moves.iter()));
@@ -508,7 +674,7 @@ mod bishop {
         chess.set(KING | BLACK, 81);
         chess.set(BISHOP | BLACK, 36);
 
-        let moves = chess.generate_diagonal_sliding_moves(36);
+        let moves = chess.moves(36);
         let correct_moves = [53, 70, 87, 51, 66, 19, 2, 21, 6];
         assert!(moves.iter().eq(correct_moves.iter()));
 
@@ -519,7 +685,7 @@ mod bishop {
         chess.set(KING | BLACK, 81);
         chess.set(BISHOP | BLACK, 36);
 
-        let moves = chess.generate_diagonal_sliding_moves(36);
+        let moves = chess.moves(36);
         let correct_moves = [53, 70, 87, 51, 66, 19, 2, 21, 6];
         assert!(moves.iter().eq(correct_moves.iter()));
 
@@ -530,7 +696,7 @@ mod bishop {
         chess.set(KING | BLACK, 7);
         chess.set(BISHOP | BLACK, 112);
 
-        let moves = chess.generate_diagonal_sliding_moves(112);
+        let moves = chess.moves(112);
         let correct_moves = [97, 82, 67, 52, 37, 22];
 
         assert!(moves.iter().eq(correct_moves.iter()));

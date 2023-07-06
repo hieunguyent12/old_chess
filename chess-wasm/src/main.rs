@@ -13,18 +13,26 @@ impl<'a> std::fmt::LowerHex for ByteBuf<'a> {
 
 fn main() {
     let mut chess = Chess::new();
-    // chess.set_turn(BLACK);
-    chess.set(Piece::PAWN, 100);
-    chess.set(Piece::BLACK_PAWN, 69);
-    chess.move_piece(100, 68);
 
-    let moves = chess.moves(69);
+    // chess.set(Piece::BISHOP, 51);
+    chess.set(Piece::KING, 116);
+    chess.set(Piece::ROOK, 119);
+    // chess.set(Piece::BLACK_QUEEN, 37);
+    // chess.set(Piece::BLACK_BISHOP, 67);
 
-    // 00000101
+    chess.move_piece(119, 118);
+    chess.move_piece(118, 119);
 
-    println!("{:?}", chess.board);
+    let moves = chess.moves(116);
+
+    // chess.move_piece(112, 96);
+    // chess.move_piece(96, 112);
+
+    // chess.move_piece(116, 115);
+    // chess.move_piece(115, 117);
+
+    println!("{:?}", chess.kings);
     println!("{:?}", moves);
-    // println!("{}", chess.in_check());
     // let moves = chess.moves(98);
 
     // chess.set(Piece::PAWN, 86);
@@ -50,3 +58,4 @@ fn main() {
 
     // println!("{:?}", moves);
 }
+//
