@@ -14,48 +14,28 @@ impl<'a> std::fmt::LowerHex for ByteBuf<'a> {
 fn main() {
     let mut chess = Chess::new();
 
-    // chess.set(Piece::BISHOP, 51);
-    chess.set(Piece::KING, 116);
-    chess.set(Piece::ROOK, 119);
-    // chess.set(Piece::BLACK_QUEEN, 37);
-    // chess.set(Piece::BLACK_BISHOP, 67);
+    chess.set(Piece::PAWN, 50);
+    chess.set(Piece::BLACK_PAWN, 20);
 
-    chess.move_piece(119, 118);
-    chess.move_piece(118, 119);
+    chess.move_piece(50, 51);
 
-    let moves = chess.moves(116);
+    chess.set_turn(BLACK);
+    chess.move_piece(20, 52);
 
-    // chess.move_piece(112, 96);
-    // chess.move_piece(96, 112);
+    chess.set_turn(WHITE);
+    chess.move_piece(51, 36);
 
-    // chess.move_piece(116, 115);
-    // chess.move_piece(115, 117);
+    // // chess.set_turn(BLACK);
 
-    println!("{:?}", chess.kings);
-    println!("{:?}", moves);
-    // let moves = chess.moves(98);
+    // chess.set(Piece::MOVED_PAWN, 51);
+    // chess.set(Piece::BLACK_PAWN, 52);
+    // chess.set(Piece::EMPTY | 5, 36);
 
-    // chess.set(Piece::PAWN, 86);
-    // chess.set(Piece::KING, 84);
-    // chess.set(Piece::BLACK_BISHOP, 69);
-    // let moves = chess.moves(86);
+    // // chess.move_piece(20, 52);
+    // // chess.set_turn(WHITE);
 
-    // chess.set_turn(BLACK);
+    // chess.move_piece(51, 36);
 
-    // chess.set(Piece::BLACK_BISHOP, 53);
-    // chess.set(Piece::BLACK_KING, 51);
-    // chess.set(Piece::PAWN, 68);
-    // // chess.set(BISHOP | BLACK, 98);
-
-    // let moves = chess.generate_diagonal_sliding_moves(53);
-
-    // chess.set(BISHOP, 102);
-    // chess.set(KING, 112);
-    // chess.set(PAWN, 97);
-    // chess.set(BISHOP | BLACK, 82);
-
-    // let moves = chess.generate_diagonal_sliding_moves(102 as u8);
-
-    // println!("{:?}", moves);
+    println!("{:?}", chess.board);
+    println!("{:?}", chess.white_captures);
 }
-//

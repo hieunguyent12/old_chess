@@ -3,8 +3,8 @@ use wasm_bindgen::prelude::*;
 
 const BOARD_SIZE: u8 = 128;
 const COLOR_MASK: u8 = 128; // 10000000
-const MOVED_MASK: u8 = 64; // 00001000
-const EN_PASSANT_SQUARE: u8 = 64; // 01000000
+const MOVED_MASK: u8 = 64; // 01000000
+const EN_PASSANT_SQUARE: u8 = 5; // 00000101
 
 // use | to make a piece black or white
 // use & to check if a piece is black or white
@@ -20,11 +20,11 @@ pub mod Piece {
     pub type PieceType = u8;
 
     pub const EMPTY: PieceType = 0; //         00000000
-    pub const MOVED_PAWN: PieceType = PAWN | MOVED_MASK; //    00000011
-    pub const MOVED_BLACK_PAWN: PieceType = MOVED_PAWN | BLACK; // 10000011
+    pub const MOVED_PAWN: PieceType = PAWN | MOVED_MASK; //    10000001
+    pub const MOVED_BLACK_PAWN: PieceType = MOVED_PAWN | BLACK; // 11000001
     pub const MOVED_KING: PieceType = KING | MOVED_MASK;
 
-    pub const PAWN: PieceType = 1; //          00000001   Moved pawn: 00000011
+    pub const PAWN: PieceType = 1; //          00000001
     pub const ROOK: PieceType = 2; //          00000010
     pub const KNIGHT: PieceType = 4; //        00000100
     pub const BISHOP: PieceType = 8; //        00001000
@@ -126,10 +126,11 @@ struct Move {
     from_piece: PieceType,
     to_piece: PieceType,
     is_castling: bool,
+    captured: bool,
+    en_passant: bool,
 }
 
-#[derive(Debug)]
-pub struct King {
+struct King {
     white: PieceIndex,
     black: PieceIndex,
 }
@@ -143,16 +144,21 @@ pub struct Chess {
     history: Vec<Move>,
 
     /// the kings' indices on the board
-    pub kings: King,
+    kings: King,
+
+    pub white_captures: Vec<PieceType>,
+    pub black_captures: Vec<PieceType>,
 }
 
 impl Chess {
     pub fn new() -> Self {
         Self {
-            board: [0; BOARD_SIZE as usize],
+            board: [EMPTY; BOARD_SIZE as usize],
             turn: WHITE,
             history: vec![],
             kings: King { white: 1, black: 2 },
+            white_captures: vec![],
+            black_captures: vec![],
         }
     }
 
@@ -167,6 +173,8 @@ impl Chess {
                 from_piece: self.get(from_idx),
                 to_piece,
                 is_castling: false,
+                captured: false,
+                en_passant: false,
             };
 
             if self.remove_color(piece) == PAWN {
@@ -180,6 +188,7 @@ impl Chess {
 
                     if self.is_on_board(left_idx) {
                         let piece = self.get(left_idx);
+
                         let is_enemy = !self.is_friendly(piece);
                         let piece = self.remove_color(piece);
 
@@ -211,6 +220,19 @@ impl Chess {
                             self.set(EMPTY | EN_PASSANT_SQUARE, idx);
                         }
                     }
+                }
+            } else if self.remove_color(piece) == MOVED_PAWN {
+                if to_piece == EN_PASSANT_SQUARE {
+                    if to_idx > from_idx {
+                        self.capture(self.get(to_idx - 16));
+                        self.set(Piece::EMPTY, to_idx - 16);
+                    } else {
+                        self.capture(self.get(to_idx + 16));
+                        self.set(Piece::EMPTY, to_idx + 16);
+                    }
+
+                    player_move.captured = true;
+                    player_move.en_passant = true;
                 }
             } else if self.remove_color(piece) == ROOK {
                 piece = piece | MOVED_MASK;
@@ -249,6 +271,11 @@ impl Chess {
                 if piece == BLACK_KING {
                     self.kings.black = to_idx;
                 }
+            }
+
+            if to_piece != EMPTY && !self.is_friendly(to_piece) {
+                self.capture(to_piece);
+                player_move.captured = true;
             }
 
             self.set(piece, to_idx);
@@ -525,6 +552,36 @@ impl Chess {
                 }
             }
 
+            // TODO this is not correct because it might go out of sync?
+            if player_move.captured {
+                if self.turn == WHITE {
+                    self.white_captures.pop();
+                } else {
+                    self.black_captures.pop();
+                }
+            }
+
+            // TODO test this
+            if player_move.en_passant {
+                let from_idx = player_move.from_idx;
+
+                let idx = match player_move.to_idx {
+                    i if i < from_idx => player_move.to_idx + 16,
+                    i if i > from_idx => player_move.to_idx - 16,
+                    _ => panic!("could not calculate en passant squares"),
+                };
+
+                self.set(EMPTY | EN_PASSANT_SQUARE, idx);
+
+                let piece = self.remove_mask(player_move.from_piece, MOVED_MASK);
+
+                if piece == MOVED_PAWN {
+                    self.set(MOVED_BLACK_PAWN, player_move.to_idx + 16);
+                } else if piece == MOVED_BLACK_PAWN {
+                    self.set(MOVED_PAWN, player_move.to_idx - 16);
+                }
+            }
+
             // move the pieces back to its original square
             self.set(player_move.from_piece, player_move.from_idx);
             self.set(player_move.to_piece, player_move.to_idx);
@@ -622,6 +679,14 @@ impl Chess {
 
     fn remove_color(&self, piece: PieceType) -> PieceType {
         self.remove_mask(piece, COLOR_MASK)
+    }
+
+    fn capture(&mut self, piece: PieceType) {
+        if self.turn == WHITE {
+            self.white_captures.push(piece);
+        } else {
+            self.black_captures.push(piece);
+        }
     }
 
     fn remove_mask(&self, piece: PieceType, mask: u8) -> u8 {
