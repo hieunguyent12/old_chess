@@ -14,28 +14,21 @@ impl<'a> std::fmt::LowerHex for ByteBuf<'a> {
 fn main() {
     let mut chess = Chess::new();
 
-    chess.set(Piece::PAWN, 50);
-    chess.set(Piece::BLACK_PAWN, 20);
+    // chess.set_turn(BLACK);
+    chess.set(Piece::KING, 116);
+    chess.set(Piece::BLACK_BISHOP, 83);
+    chess.set(Piece::ROOK, 119);
 
-    chess.move_piece(50, 51);
+    // chess.set(Piece::BISHOP, 53);
 
-    chess.set_turn(BLACK);
-    chess.move_piece(20, 52);
+    // chess.set(Piece::KING, 116);
+    // chess.set(Piece::ROOK, 119);
+    // // chess.set(Piece::ROOK, 112);
 
-    chess.set_turn(WHITE);
-    chess.move_piece(51, 36);
+    // chess.set(Piece::BLACK_BISHOP, 67);
+    // chess.set(Piece::BLACK_QUEEN, 102);
 
-    // // chess.set_turn(BLACK);
+    let moves = chess.moves(116);
 
-    // chess.set(Piece::MOVED_PAWN, 51);
-    // chess.set(Piece::BLACK_PAWN, 52);
-    // chess.set(Piece::EMPTY | 5, 36);
-
-    // // chess.move_piece(20, 52);
-    // // chess.set_turn(WHITE);
-
-    // chess.move_piece(51, 36);
-
-    println!("{:?}", chess.board);
-    println!("{:?}", chess.white_captures);
+    println!("{:?}", moves);
 }

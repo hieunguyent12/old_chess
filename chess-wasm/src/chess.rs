@@ -125,7 +125,7 @@ struct Move {
     to_idx: PieceIndex,
     from_piece: PieceType,
     to_piece: PieceType,
-    is_castling: bool,
+    castle: bool,
     captured: bool,
     en_passant: bool,
 }
@@ -148,6 +148,9 @@ pub struct Chess {
 
     pub white_captures: Vec<PieceType>,
     pub black_captures: Vec<PieceType>,
+
+    can_king_side_castle: bool,
+    can_queen_side_castle: bool,
 }
 
 impl Chess {
@@ -159,6 +162,8 @@ impl Chess {
             kings: King { white: 1, black: 2 },
             white_captures: vec![],
             black_captures: vec![],
+            can_king_side_castle: true,
+            can_queen_side_castle: true,
         }
     }
 
@@ -166,62 +171,50 @@ impl Chess {
         if self.is_on_board(to_idx) {
             let mut piece = self.get(from_idx);
             let to_piece = self.get(to_idx);
+            let piece_without_color = self.remove_color(piece);
 
             let mut player_move = Move {
                 from_idx,
                 to_idx,
                 from_piece: self.get(from_idx),
                 to_piece,
-                is_castling: false,
+                castle: false,
                 captured: false,
                 en_passant: false,
             };
 
-            if self.remove_color(piece) == PAWN {
+            if piece_without_color == PAWN {
                 // set the pawn to moved
                 piece = piece | MOVED_MASK;
                 // if it has moved 2 squares, update en passant pawns
                 if to_idx.abs_diff(from_idx) == 32 {
-                    // TODO: refactor this stuff
-                    let left_idx = to_idx - 1;
-                    let right_idx = to_idx + 1;
+                    let left_idx = to_idx as i8 - 1;
+                    let right_idx = to_idx as i8 + 1;
 
-                    if self.is_on_board(left_idx) {
-                        let piece = self.get(left_idx);
+                    let indexes: [i8; 2] = [left_idx, right_idx];
 
-                        let is_enemy = !self.is_friendly(piece);
-                        let piece = self.remove_color(piece);
+                    for index in indexes {
+                        if self.is_on_board(index as PieceIndex) {
+                            let piece = self.get(index as PieceIndex);
 
-                        // check if the piece is an enemy pawn
-                        if (piece | MOVED_MASK) ^ MOVED_MASK == PAWN && is_enemy {
-                            let idx = match to_idx {
-                                i if i > from_idx => from_idx + 16,
-                                i if i < from_idx => from_idx - 16,
-                                _ => panic!("could not calculate en passant squares"),
-                            };
+                            let is_enemy = !self.is_friendly(piece);
+                            let piece_without_color = self.remove_color(piece);
 
-                            self.set(EMPTY | EN_PASSANT_SQUARE, idx);
-                        }
-                    }
+                            // check if the piece is an enemy pawn
+                            if self.remove_mask(piece_without_color, MOVED_MASK) == PAWN && is_enemy
+                            {
+                                let idx = match to_idx {
+                                    i if i > from_idx => from_idx + 16,
+                                    i if i < from_idx => from_idx - 16,
+                                    _ => panic!("could not calculate en passant squares"),
+                                };
 
-                    if self.is_on_board(right_idx) {
-                        let piece = self.get(right_idx);
-                        let is_enemy = !self.is_friendly(piece);
-
-                        let piece = self.remove_color(piece);
-
-                        // check if the piece is an enemy pawn
-                        if (piece | MOVED_MASK) ^ MOVED_MASK == PAWN && is_enemy {
-                            let idx = match to_idx {
-                                i if i > from_idx => from_idx + 16,
-                                i if i < from_idx => from_idx - 16,
-                                _ => panic!("could not calculate en passant squares"),
-                            };
-                            self.set(EMPTY | EN_PASSANT_SQUARE, idx);
+                                self.set(EMPTY | EN_PASSANT_SQUARE, idx);
+                            }
                         }
                     }
                 }
-            } else if self.remove_color(piece) == MOVED_PAWN {
+            } else if piece_without_color == MOVED_PAWN {
                 if to_piece == EN_PASSANT_SQUARE {
                     if to_idx > from_idx {
                         self.capture(self.get(to_idx - 16));
@@ -234,45 +227,33 @@ impl Chess {
                     player_move.captured = true;
                     player_move.en_passant = true;
                 }
-            } else if self.remove_color(piece) == ROOK {
+            } else if piece_without_color == ROOK {
                 piece = piece | MOVED_MASK;
-            } else if self.remove_color(piece) == KING {
-                let king_side = to_idx as i8 - from_idx as i8 == 2;
-                let queen_side = to_idx as i8 - from_idx as i8 == -2;
+            } else if piece_without_color == KING {
+                self.update_kings_position(to_idx);
 
-                if piece == KING {
-                    self.kings.white = to_idx;
+                if self.can_king_side_castle || self.can_queen_side_castle {
+                    if self.is_king_side_castling(from_idx, to_idx) {
+                        self.set(Piece::ROOK | self.turn, to_idx - 1);
+                        self.set(Piece::EMPTY, to_idx + 1);
+                        player_move.castle = true;
+                    } else if self.is_queen_side_castling(from_idx, to_idx) {
+                        self.set(Piece::ROOK | self.turn, to_idx + 1);
+                        self.set(Piece::EMPTY, to_idx - 2);
+                        player_move.castle = true;
+                    }
                 }
 
-                if piece == BLACK_KING {
-                    self.kings.black = to_idx;
-                }
-
-                // TODO: cannot pass through a check
-                if king_side {
-                    self.set(Piece::ROOK | self.turn, to_idx - 1);
-                    self.set(Piece::EMPTY, to_idx + 1);
-                    player_move.is_castling = true;
-                } else if queen_side {
-                    self.set(Piece::ROOK | self.turn, to_idx + 1);
-                    self.set(Piece::EMPTY, to_idx - 2);
-                    player_move.is_castling = true;
-                } else {
-                    piece = piece | MOVED_MASK;
-                }
-            } else if self.remove_color(piece) == MOVED_KING {
-                let piece = self.remove_mask(piece, MOVED_MASK);
-
-                // update the king's position
-                if piece == KING {
-                    self.kings.white = to_idx;
-                }
-
-                if piece == BLACK_KING {
-                    self.kings.black = to_idx;
-                }
+                piece = piece | MOVED_MASK;
+                self.can_king_side_castle = false;
+                self.can_queen_side_castle = false;
+            } else if piece_without_color == MOVED_KING {
+                self.update_kings_position(to_idx);
+                self.can_king_side_castle = false;
+                self.can_queen_side_castle = false;
             }
 
+            // check if we are capturing a piece
             if to_piece != EMPTY && !self.is_friendly(to_piece) {
                 self.capture(to_piece);
                 player_move.captured = true;
@@ -289,6 +270,10 @@ impl Chess {
 
     /// Return the piece on the square
     fn get(&self, square_idx: PieceIndex) -> PieceIndex {
+        if !self.is_on_board(square_idx) {
+            panic!("square out of bound");
+        }
+
         self.board[square_idx as usize]
     }
 
@@ -392,37 +377,67 @@ impl Chess {
 
     pub fn generate_king_moves(&mut self, square_idx: PieceIndex, deltas: Vec<i8>) -> Vec<u8> {
         let mut moves: Vec<PieceIndex> = vec![];
-        let mut can_castle = true;
 
         for delta in deltas {
             // convert to i16 to prevent overflow
-            let destination_idx = square_idx as i16 + delta as i16;
+            let destination_idx = (square_idx as i16 + delta as i16) as PieceIndex;
 
-            if self.is_on_board(destination_idx as u8) {
-                let piece = self.get(destination_idx as PieceIndex);
+            if self.is_on_board(destination_idx) {
+                let piece = self.get(destination_idx);
+                let is_friendly = self.is_friendly(piece);
 
-                if piece != EMPTY && self.is_friendly(piece) {
-                    continue;
-                }
+                if piece != EMPTY {
+                    let is_castling_move = self.is_king_side_castling(square_idx, destination_idx)
+                        || self.is_queen_side_castling(square_idx, destination_idx);
 
-                if piece == EMPTY {
-                    let king_side = destination_idx as i8 - square_idx as i8 == 2 && can_castle;
-                    let queen_side = destination_idx as i8 - square_idx as i8 == -2 && can_castle;
+                    if is_castling_move {
+                        continue;
+                    }
 
-                    if king_side {
-                        let piece = self.get(destination_idx as PieceIndex + 1);
+                    // if enemy piece, we can capture it
+                    if !is_friendly {
+                        moves.push(destination_idx);
+                    }
+                } else {
+                    if self.is_castling(square_idx, destination_idx) {
+                        let is_king_side_castling =
+                            self.is_king_side_castling(square_idx, destination_idx);
+
+                        let is_queen_side_castling =
+                            self.is_queen_side_castling(square_idx, destination_idx);
+
+                        if is_king_side_castling && !self.can_king_side_castle {
+                            break;
+                        }
+
+                        if is_queen_side_castling && !self.can_queen_side_castle {
+                            break;
+                        }
+
+                        let rook_idx: PieceIndex = if is_king_side_castling {
+                            destination_idx + 1
+                        } else if is_queen_side_castling {
+                            destination_idx - 2
+                        } else {
+                            panic!("failed to castle")
+                        };
+
+                        let piece = self.get(rook_idx);
                         let mut is_checked = false;
                         let mut idx = square_idx;
 
                         for _ in 0..2 {
-                            // let piece = self.get(idx);
-
                             if self.is_attacked(idx) {
                                 is_checked = true;
-                                can_castle = false;
                             }
 
-                            idx += 1;
+                            if is_king_side_castling {
+                                idx += 1;
+                            }
+
+                            if is_queen_side_castling {
+                                idx -= 1;
+                            }
                         }
 
                         if piece != EMPTY
@@ -430,38 +445,21 @@ impl Chess {
                             && self.is_friendly(piece)
                             && !is_checked
                         {
-                            moves.push(destination_idx as PieceIndex);
+                            moves.push(destination_idx);
                         }
-                    } else if queen_side {
-                        let piece = self.get(destination_idx as PieceIndex - 2);
-                        let mut is_checked = false;
-                        let mut idx = square_idx;
 
-                        for _ in 0..2 {
-                            // let piece = self.get(idx);
-
-                            if self.is_attacked(idx) {
-                                is_checked = true;
-                                can_castle = false;
+                        // if the piece is not an *unmoved* rook, then the king loses castling rights
+                        if self.remove_color(piece) != ROOK && self.is_friendly(piece) {
+                            if is_king_side_castling {
+                                self.can_king_side_castle = false;
                             }
 
-                            idx -= 1;
-                        }
-
-                        if piece != EMPTY
-                            && self.remove_color(piece) == ROOK
-                            && self.is_friendly(piece)
-                            && !is_checked
-                        {
-                            moves.push(destination_idx as PieceIndex);
+                            if is_queen_side_castling {
+                                self.can_queen_side_castle = false;
+                            }
                         }
                     } else {
-                        let king_side = destination_idx as i8 - square_idx as i8 == 2;
-                        let queen_side = destination_idx as i8 - square_idx as i8 == -2;
-
-                        if !king_side && !queen_side {
-                            moves.push(destination_idx as PieceIndex);
-                        }
+                        moves.push(destination_idx);
                     }
                 }
             }
@@ -524,7 +522,7 @@ impl Chess {
 
     pub fn undo(&mut self) {
         if let Some(player_move) = self.history.pop() {
-            if player_move.is_castling {
+            if player_move.castle {
                 let Move {
                     to_idx, from_idx, ..
                 } = player_move;
@@ -602,9 +600,14 @@ impl Chess {
     pub fn is_attacked(&self, square_idx: PieceIndex) -> bool {
         let mut is_attacked = false;
         for idx in 0..BOARD_SIZE {
+            if !self.is_on_board(idx) {
+                continue;
+            }
+
             let piece = self.get(idx);
             let attacker_idx = idx;
             let defender_idx = square_idx;
+            let defender_piece = self.get(defender_idx);
 
             if self.is_friendly(piece) || piece == EMPTY {
                 continue;
@@ -638,11 +641,13 @@ impl Chess {
                         while self.is_on_board(destination_idx as PieceIndex) {
                             let piece = self.get(destination_idx as PieceIndex);
 
-                            if piece != EMPTY {
-                                if piece == self.get(defender_idx) && self.is_friendly(piece) {
-                                    is_attacked = true;
-                                } else {
-                                    // if there is a piece standing in the way, there is no check
+                            if piece == defender_piece
+                                && destination_idx as PieceIndex == defender_idx
+                            {
+                                is_attacked = true;
+                            } else {
+                                // check if there is a piece blocking the attack
+                                if piece != EMPTY {
                                     break;
                                 }
                             }
@@ -679,6 +684,27 @@ impl Chess {
 
     fn remove_color(&self, piece: PieceType) -> PieceType {
         self.remove_mask(piece, COLOR_MASK)
+    }
+
+    fn is_castling(&self, from: PieceIndex, to: PieceIndex) -> bool {
+        (to as i8 - from as i8 == 2 || to as i8 - from as i8 == -2)
+            && (self.can_king_side_castle || self.can_queen_side_castle)
+    }
+
+    fn is_queen_side_castling(&self, from: PieceIndex, to: PieceIndex) -> bool {
+        to as i8 - from as i8 == -2
+    }
+
+    fn is_king_side_castling(&self, from: PieceIndex, to: PieceIndex) -> bool {
+        to as i8 - from as i8 == 2
+    }
+
+    fn update_kings_position(&mut self, new_idx: PieceIndex) {
+        if self.turn == WHITE {
+            self.kings.white = new_idx;
+        } else {
+            self.kings.black = new_idx;
+        }
     }
 
     fn capture(&mut self, piece: PieceType) {
