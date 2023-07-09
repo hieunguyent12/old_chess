@@ -1,5 +1,5 @@
 use crate::chess::Piece::*;
-use std::{collections::HashMap, hash::Hash};
+use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
 
 const BOARD_SIZE: u8 = 128;
@@ -159,6 +159,7 @@ pub struct Chess {
     pub white_captures: Vec<PieceType>,
     pub black_captures: Vec<PieceType>,
 
+    // TODO use bits for these so we only have to keep track of two fields
     pub can_white_king_side_castle: bool,
     pub can_white_queen_side_castle: bool,
 
@@ -198,9 +199,129 @@ impl Chess {
         }
     }
 
-    pub fn move_piece(&mut self, from_idx: PieceIndex, to_idx: PieceIndex) {
+    pub fn move_piece(&mut self, move_notation: &str) {
+        let parts: Vec<char> = move_notation.chars().collect();
+
+        // TODO use regex
+
+        // king-side castle
+        if move_notation == "0-0" {
+            if self.turn == WHITE {
+                if !self.can_white_king_side_castle {
+                    panic!("can't castle kingside");
+                }
+
+                let legal_moves = self.moves(self.kings.white);
+
+                if legal_moves.contains(&118) {
+                    self.inner_move_piece(self.kings.white, 118);
+                } else {
+                    panic!("illegal move, can't castle kingside");
+                }
+            } else {
+                if !self.can_black_king_side_castle {
+                    panic!("can't castle kingside");
+                }
+
+                let legal_moves = self.moves(self.kings.black);
+
+                if legal_moves.contains(&6) {
+                    self.inner_move_piece(self.kings.black, 6);
+                } else {
+                    panic!("illegal move, can't castle kingside");
+                }
+            }
+        // queen side castle
+        } else if move_notation == "0-0-0" {
+            if self.turn == WHITE {
+                if !self.can_white_queen_side_castle {
+                    panic!("can't castle queenside");
+                }
+
+                let legal_moves = self.moves(self.kings.white);
+
+                if legal_moves.contains(&114) {
+                    self.inner_move_piece(self.kings.white, 114);
+                } else {
+                    panic!("illegal move, can't castle queenside");
+                }
+            } else {
+                if !self.can_black_queen_side_castle {
+                    panic!("can't castle queenside");
+                }
+
+                let legal_moves = self.moves(self.kings.black);
+
+                if legal_moves.contains(&2) {
+                    self.inner_move_piece(self.kings.black, 2);
+                } else {
+                    panic!("illegal move, can't castle queenside");
+                }
+            }
+        } else {
+            if parts[0].is_uppercase() {
+                let mut from_idx: Option<PieceIndex> = None;
+
+                let moves = match parts[0] {
+                    'K' => {
+                        let mut moves: Vec<PieceIndex> = vec![];
+
+                        for idx in 0..BOARD_SIZE {
+                            if !self.is_on_board(idx) {
+                                continue;
+                            }
+
+                            let piece = self.get(idx);
+                            let piece_without_color = self.remove_color(piece);
+                            // let piece = self.remove_mask(piece, MOVED_MASK);
+
+                            if piece_without_color == KING && self.is_friendly(piece) {
+                                let _moves = self.moves(idx);
+                                moves = _moves;
+                                from_idx = Some(idx);
+                            }
+                        }
+
+                        moves
+                    }
+                    // 'Q' => {}
+                    // 'R' => {}
+                    // 'B' => {}
+                    // 'N' => {}
+                    _ => {
+                        panic!("Invalid piece")
+                    }
+                };
+
+                let file = parts[1];
+                let rank = parts[2];
+
+                let idx =
+                    self.convert_algebraic_notation_to_index(format!("{}{}", file, rank).as_str());
+
+                let to_idx = ACTUAL_BOARD[idx as usize];
+
+                if let Some(from_idx) = from_idx {
+                    if moves.contains(&to_idx) {
+                        self.inner_move_piece(from_idx, to_idx)
+                    }
+                }
+            } else {
+                // pawn move
+            }
+        }
+
+        self.change_turn();
+    }
+
+    fn inner_move_piece(&mut self, from_idx: PieceIndex, to_idx: PieceIndex) {
         if self.is_on_board(to_idx) {
             let mut piece = self.get(from_idx);
+
+            if piece == EMPTY || piece == EN_PASSANT_SQUARE {
+                panic!("can't move an empty square");
+            }
+
             let to_piece = self.get(to_idx);
             let piece_without_color = self.remove_color(piece);
 
@@ -334,10 +455,19 @@ impl Chess {
     pub fn set(&mut self, piece: PieceType, square_idx: PieceIndex) {
         if piece == KING {
             self.kings.white = square_idx;
+
+            if square_idx != 116 {
+                self.can_white_king_side_castle = false;
+                self.can_white_queen_side_castle = false;
+            }
         }
 
         if piece == BLACK_KING {
             self.kings.black = square_idx;
+            if square_idx != 4 {
+                self.can_black_king_side_castle = false;
+                self.can_black_queen_side_castle = false;
+            }
         }
 
         self.board[square_idx as usize] = piece;
@@ -367,7 +497,7 @@ impl Chess {
         for idx in moves {
             let destination_idx = idx;
             // play the move
-            self.move_piece(square_idx, destination_idx as u8);
+            self.inner_move_piece(square_idx, destination_idx as u8);
 
             if !self.in_check() {
                 legal_moves.push(destination_idx);
@@ -638,6 +768,7 @@ impl Chess {
                     self.kings.black = player_move.from_idx;
                 }
 
+                // TODO this is wrong, we just need to store the castling rights in player_move
                 self.update_castling_rights(true, true)
             }
 
@@ -661,7 +792,7 @@ impl Chess {
 
                 self.set(EN_PASSANT_SQUARE, idx);
 
-                let piece = self.remove_mask(player_move.from_piece, MOVED_MASK);
+                let piece = player_move.from_piece;
 
                 if piece == MOVED_PAWN {
                     self.set(MOVED_BLACK_PAWN, player_move.to_idx + 16);
@@ -1130,8 +1261,10 @@ impl Chess {
 
     fn change_turn(&mut self) {
         if self.turn == WHITE {
+            self.last_turn = WHITE;
             self.set_turn(BLACK);
         } else {
+            self.last_turn = BLACK;
             self.set_turn(WHITE);
         }
     }
@@ -1164,6 +1297,8 @@ impl Chess {
     fn remove_color(&self, piece: PieceType) -> PieceType {
         self.remove_mask(piece, COLOR_MASK)
     }
+
+    fn get_castling_rights(&self) {}
 
     fn is_castling(&self, from: PieceIndex, to: PieceIndex) -> bool {
         let can_castle = match self.turn {

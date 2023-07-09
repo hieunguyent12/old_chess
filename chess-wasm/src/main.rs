@@ -14,24 +14,12 @@ impl<'a> std::fmt::LowerHex for ByteBuf<'a> {
 fn main() {
     let mut chess = Chess::new();
 
-    // chess.set_turn(BLACK);
     chess.set(Piece::KING, 116);
     chess.set(Piece::ROOK, 119);
-    chess.set(Piece::PAWN, 101);
-    chess.set(Piece::BLACK_KING, 4);
     chess.set(Piece::BLACK_ROOK, 7);
+    chess.set(Piece::BLACK_KING, 4);
 
-    // chess.set_turn(BLACK);
-    chess.move_piece(101, 69);
-    // chess.move_piece(6, 7);
-
-    // chess.set_turn(WHITE);
-    println!("{:?}", chess.moves(116));
-
-    println!("{:?}", chess);
-
-    chess.set_turn(BLACK);
-    println!("{:?}", chess.moves(4));
+    chess.move_piece("Ke3");
 
     println!("{:?}", chess.get_fen());
 
