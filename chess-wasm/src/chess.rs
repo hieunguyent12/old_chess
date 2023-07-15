@@ -1,4 +1,5 @@
 use crate::chess::Piece::*;
+use regex::Regex;
 use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
 
@@ -121,24 +122,39 @@ const DELTAS: [i8; 239]= [
     15,  0,  0,  0,  0,  0,  0, 16,  0,  0,  0,  0,  0,  0, 17
  ];
 
-const ACTUAL_BOARD: [u8; 64] = [
+const BOARD_MAP: [u8; 64] = [
     0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 19, 20, 21, 22, 23, 32, 33, 34, 35, 36, 37, 38, 39, 48, 49,
     50, 51, 52, 53, 54, 55, 64, 65, 66, 67, 68, 69, 70, 71, 80, 81, 82, 83, 84, 85, 86, 87, 96, 97,
     98, 99, 100, 101, 102, 103, 112, 113, 114, 115, 116, 117, 118, 119,
 ];
 
-const FILES: [char; 8] = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
+const FILES: [&str; 8] = ["a", "b", "c", "d", "e", "f", "g", "h"];
+
+fn is_number(arg: &str) -> bool {
+    arg.chars()
+        .collect::<Vec<char>>()
+        .iter()
+        .all(|&c| c.is_digit(10))
+}
+
 #[derive(Debug)]
-struct Move {
+struct HistoryEntry {
     from_idx: PieceIndex,
     to_idx: PieceIndex,
     from_piece: PieceType,
     to_piece: PieceType,
     castle: bool,
-    captured: bool,
-    en_passant: bool,
-    en_passant_square: Option<PieceIndex>,
+    capture: bool,
+    en_passant_capture: bool,
+    half_moves: u8,
+    full_moves: u8,
+    en_passant_square: Option<String>,
+    can_white_king_side_castle: bool,
+    can_white_queen_side_castle: bool,
+    can_black_king_side_castle: bool,
+    can_black_queen_side_castle: bool,
 }
+
 #[derive(Debug)]
 struct King {
     white: PieceIndex,
@@ -151,7 +167,7 @@ pub struct Chess {
     /// 0 = white, 128 = black
     turn: u8,
 
-    history: Vec<Move>,
+    history: Vec<HistoryEntry>,
 
     /// the kings' indices on the board
     kings: King,
@@ -168,12 +184,12 @@ pub struct Chess {
 
     /// Record the number of each position.
     /// If any position happens 3 times, the game is declared draw
-    unique_position_count: HashMap<String, u8>,
+    unique_positions: HashMap<String, u8>,
 
     half_moves: u8,
     full_moves: u8,
 
-    lastest_en_passant_square: Option<u8>,
+    lastest_en_passant_square: Option<String>,
 
     last_turn: u8,
 }
@@ -191,7 +207,7 @@ impl Chess {
             can_white_queen_side_castle: true,
             can_black_king_side_castle: true,
             can_black_queen_side_castle: true,
-            unique_position_count: HashMap::new(),
+            unique_positions: HashMap::new(),
             half_moves: 0,
             full_moves: 0,
             lastest_en_passant_square: None,
@@ -201,8 +217,7 @@ impl Chess {
 
     pub fn move_piece(&mut self, move_notation: &str) {
         let parts: Vec<char> = move_notation.chars().collect();
-
-        // TODO use regex
+        let move_regex = Regex::new(r"^([KQRBN])([a-h]|[1-8])?(x)?([a-h])([1-8])([+#])?$").unwrap();
 
         // king-side castle
         if move_notation == "0-0" {
@@ -211,7 +226,7 @@ impl Chess {
                     panic!("can't castle kingside");
                 }
 
-                let legal_moves = self.moves(self.kings.white);
+                let legal_moves = self.inner_moves(self.kings.white);
 
                 if legal_moves.contains(&118) {
                     self.inner_move_piece(self.kings.white, 118);
@@ -223,7 +238,7 @@ impl Chess {
                     panic!("can't castle kingside");
                 }
 
-                let legal_moves = self.moves(self.kings.black);
+                let legal_moves = self.inner_moves(self.kings.black);
 
                 if legal_moves.contains(&6) {
                     self.inner_move_piece(self.kings.black, 6);
@@ -238,7 +253,7 @@ impl Chess {
                     panic!("can't castle queenside");
                 }
 
-                let legal_moves = self.moves(self.kings.white);
+                let legal_moves = self.inner_moves(self.kings.white);
 
                 if legal_moves.contains(&114) {
                     self.inner_move_piece(self.kings.white, 114);
@@ -250,7 +265,7 @@ impl Chess {
                     panic!("can't castle queenside");
                 }
 
-                let legal_moves = self.moves(self.kings.black);
+                let legal_moves = self.inner_moves(self.kings.black);
 
                 if legal_moves.contains(&2) {
                     self.inner_move_piece(self.kings.black, 2);
@@ -260,61 +275,125 @@ impl Chess {
             }
         } else {
             if parts[0].is_uppercase() {
+                // [a-h][file-rank-identifier][a-h][file]
+                // [a-h]x[a-h][file]
+                // [a-h][file-rank-identifier]x[a-h][file]
+
+                let captures = move_regex
+                    .captures(move_notation)
+                    .expect("Invalid move notation");
+
+                let piece_type = captures.get(1).unwrap().as_str();
+                let piece_identifer = captures.get(2).map_or("", |m| m.as_str());
+                let is_capture = captures.get(3).map_or(false, |_| true);
+                let to_file = captures.get(4).map_or("", |m| m.as_str());
+                let to_rank = captures.get(5).map_or("", |m| m.as_str());
+                let side_effect = captures.get(6).map_or("", |m| m.as_str()); // + = check, # = checkmate, `=` = promotion
+
                 let mut from_idx: Option<PieceIndex> = None;
+                let idx = self.convert_algebraic_notation_to_index(
+                    format!("{}{}", to_file, to_rank).as_str(),
+                );
 
-                let moves = match parts[0] {
-                    'K' => {
-                        let mut moves: Vec<PieceIndex> = vec![];
+                let to_idx = BOARD_MAP[idx as usize];
 
-                        for idx in 0..BOARD_SIZE {
-                            if !self.is_on_board(idx) {
-                                continue;
-                            }
+                // let mut inner_moves: Vec<PieceIndex> = vec![];
+                let mut count = 0;
 
-                            let piece = self.get(idx);
-                            let piece_without_color = self.remove_color(piece);
-                            // let piece = self.remove_mask(piece, MOVED_MASK);
+                let target_piece = self.get(to_idx);
 
-                            if piece_without_color == KING && self.is_friendly(piece) {
-                                let _moves = self.moves(idx);
-                                moves = _moves;
-                                from_idx = Some(idx);
-                            }
+                if is_capture && (self.is_friendly(target_piece) || target_piece == EMPTY) {
+                    panic!("invalid capture")
+                }
+
+                // TODO what about rank?
+                let mut target_file = None;
+                let mut target_rank = None;
+                if !piece_identifer.is_empty() {
+                    if is_number(piece_identifer) {
+                        target_rank = Some(piece_identifer.parse::<u8>().unwrap());
+                    } else {
+                        target_file =
+                            Some(FILES.iter().position(|f| f.eq(&piece_identifer)).unwrap() as u8);
+                    }
+                }
+
+                for idx in 0..BOARD_SIZE {
+                    if !self.is_on_board(idx) {
+                        continue;
+                    }
+
+                    let piece = self.get(idx);
+                    let piece_type = self.get_type(piece);
+
+                    let target_type = match parts[0] {
+                        'K' => KING,
+                        'Q' => QUEEN,
+                        'R' => ROOK,
+                        'B' => BISHOP,
+                        'N' => KNIGHT,
+                        _ => {
+                            panic!("Invalid piece")
+                        }
+                    };
+
+                    if piece_type == target_type && self.is_friendly(piece) {
+                        count += 1;
+                        let _moves = self.inner_moves(idx);
+                        let file = idx & 7;
+                        let rank = 8 - ((idx >> 4) + 1) + 1;
+
+                        if !_moves.contains(&to_idx) {
+                            continue;
                         }
 
-                        moves
+                        if let Some(target_file) = target_file {
+                            if file == target_file {
+                                if count >= 2 && _moves.contains(&to_idx) {
+                                    panic!("don't know which piece to move");
+                                }
+                                from_idx = Some(idx);
+                            }
+                        } else if let Some(target_rank) = target_rank {
+                            if rank == target_rank {
+                                if count >= 2 && _moves.contains(&to_idx) {
+                                    panic!("don't know which piece to move");
+                                }
+                                from_idx = Some(idx);
+                            }
+                        } else {
+                            if count >= 2 && _moves.contains(&to_idx) {
+                                // if the second piece can also move to that location, then we panic
+                                // because we don't know which piece to move
+                                panic!("don't know which piece to move");
+                            }
+
+                            from_idx = Some(idx);
+                        }
                     }
-                    // 'Q' => {}
-                    // 'R' => {}
-                    // 'B' => {}
-                    // 'N' => {}
-                    _ => {
-                        panic!("Invalid piece")
-                    }
-                };
-
-                let file = parts[1];
-                let rank = parts[2];
-
-                let idx =
-                    self.convert_algebraic_notation_to_index(format!("{}{}", file, rank).as_str());
-
-                let to_idx = ACTUAL_BOARD[idx as usize];
+                }
 
                 if let Some(from_idx) = from_idx {
-                    if moves.contains(&to_idx) {
-                        self.inner_move_piece(from_idx, to_idx)
-                    }
+                    self.inner_move_piece(from_idx, to_idx)
+                } else {
+                    println!("Can't find piece at from_idx")
                 }
             } else {
                 // pawn move
             }
         }
 
+        if self.turn == BLACK {
+            self.full_moves += 1;
+        }
+
+        self.half_moves += 1;
+        let position = self.get_fen();
+        *self.unique_positions.entry(position).or_insert(0) += 1;
         self.change_turn();
     }
 
-    fn inner_move_piece(&mut self, from_idx: PieceIndex, to_idx: PieceIndex) {
+    pub fn inner_move_piece(&mut self, from_idx: PieceIndex, to_idx: PieceIndex) {
         if self.is_on_board(to_idx) {
             let mut piece = self.get(from_idx);
 
@@ -323,32 +402,31 @@ impl Chess {
             }
 
             let to_piece = self.get(to_idx);
-            let piece_without_color = self.remove_color(piece);
+            let piece_type = self.get_type(piece);
 
-            let mut player_move = Move {
+            let mut history_entry = HistoryEntry {
                 from_idx,
                 to_idx,
-                from_piece: self.get(from_idx),
+                from_piece: piece,
                 to_piece,
                 castle: false,
-                captured: false,
-                en_passant: false,
-                en_passant_square: self.lastest_en_passant_square,
+                capture: false,
+                en_passant_capture: false,
+                half_moves: self.half_moves,
+                full_moves: self.full_moves,
+                en_passant_square: self.lastest_en_passant_square.clone(),
+                can_white_king_side_castle: self.can_white_king_side_castle,
+                can_white_queen_side_castle: self.can_white_queen_side_castle,
+                can_black_king_side_castle: self.can_black_king_side_castle,
+                can_black_queen_side_castle: self.can_black_queen_side_castle,
             };
 
-            // preserve the en passant square if the turn hasn't changed when generating moves
-            // TODO clear the square when we actually move a piece
-            if self.turn != self.last_turn
-                && piece_without_color != MOVED_PAWN
-                && to_piece != EN_PASSANT_SQUARE
-            {
-                self.clear_latest_en_passant_square();
-            }
+            self.clear_latest_en_passant_square();
 
-            if piece_without_color == PAWN {
+            if piece_type == PAWN {
                 // set the pawn to moved
                 piece = piece | MOVED_MASK;
-                // if it has moved 2 squares, update en passant pawns
+                // if it has moved 2 squares, update en passant square
                 if to_idx.abs_diff(from_idx) == 32 {
                     // make the square behind the pawn an en passant square
                     let idx = match to_idx {
@@ -358,25 +436,13 @@ impl Chess {
                     };
 
                     self.set(EN_PASSANT_SQUARE, idx);
-                    self.lastest_en_passant_square = Some(idx);
-                    // player_move.en_passant_square = self.lastest_en_passant_square;
-                    // let left_idx = to_idx as i8 - 1;
-                    // let right_idx = to_idx as i8 + 1;
-
-                    // let indexes: [i8; 2] = [left_idx, right_idx];
-
-                    // for index in indexes {
-                    //     if self.is_on_board(index as PieceIndex) {
-                    //         let piece = self.get(index as PieceIndex);
-                    //         let is_enemy = !self.is_friendly(piece);
-                    //         let piece_without_color = self.remove_color(piece);
-
-                    //     }
-                    // }
+                    self.lastest_en_passant_square =
+                        Some(self.convert_index_algebraic_notation(idx));
+                    self.half_moves = 0;
                 }
-            } else if piece_without_color == MOVED_PAWN {
+            } else if piece_type == MOVED_PAWN {
                 if to_piece == EN_PASSANT_SQUARE {
-                    if to_idx > from_idx {
+                    if self.turn == BLACK {
                         self.capture(self.get(to_idx - 16));
                         self.set(Piece::EMPTY, to_idx - 16);
                     } else {
@@ -384,59 +450,43 @@ impl Chess {
                         self.set(Piece::EMPTY, to_idx + 16);
                     }
 
-                    player_move.captured = true;
-                    player_move.en_passant = true;
+                    history_entry.capture = true;
+                    history_entry.en_passant_capture = true;
+                    self.half_moves = 0;
                 }
-            } else if piece_without_color == ROOK {
-                piece = piece | MOVED_MASK;
-            } else if piece_without_color == KING {
+            } else if piece_type == KING {
                 self.update_kings_position(to_idx);
-                piece = piece | MOVED_MASK;
 
-                let mut can_king_side_castle = true;
-                let mut can_queen_side_castle = true;
-
-                if self.turn == WHITE {
-                    can_king_side_castle = self.can_white_king_side_castle;
-                    can_queen_side_castle = self.can_white_queen_side_castle;
-                } else {
-                    can_king_side_castle = self.can_black_king_side_castle;
-                    can_queen_side_castle = self.can_black_queen_side_castle;
-                }
+                let (can_king_side_castle, can_queen_side_castle) = self.get_castling_rights();
 
                 if can_king_side_castle || can_queen_side_castle {
                     if self.is_king_side_castling(from_idx, to_idx) {
                         self.set(Piece::ROOK | self.turn, to_idx - 1);
                         self.set(Piece::EMPTY, to_idx + 1);
-                        player_move.castle = true;
+                        history_entry.castle = true;
                     } else if self.is_queen_side_castling(from_idx, to_idx) {
                         self.set(Piece::ROOK | self.turn, to_idx + 1);
                         self.set(Piece::EMPTY, to_idx - 2);
-                        player_move.castle = true;
+                        history_entry.castle = true;
                     }
                 }
-
-                self.update_castling_rights(false, false);
-            } else if piece_without_color == MOVED_KING {
+            } else if piece_type == MOVED_KING {
                 self.update_kings_position(to_idx);
-                self.update_castling_rights(false, false);
             }
 
             // check if we are capturing a piece
             if to_piece != EMPTY && !self.is_friendly(to_piece) {
                 self.capture(to_piece);
-                player_move.captured = true;
+                history_entry.capture = true;
+                self.half_moves = 0;
             }
+
+            self.update_castling_rights();
 
             self.set(piece, to_idx);
             self.set(Piece::EMPTY, from_idx);
 
-            if self.turn == BLACK {
-                self.full_moves += 1;
-            }
-
-            self.history.push(player_move);
-            self.last_turn = self.turn
+            self.history.push(history_entry);
         } else {
             // panic!("illegal move!")
         }
@@ -444,7 +494,7 @@ impl Chess {
 
     /// Return the piece on the square
     fn get(&self, square_idx: PieceIndex) -> PieceIndex {
-        if !self.is_on_board(square_idx) {
+        if !self.is_on_board(square_idx) || square_idx > 150 {
             panic!("square out of bound");
         }
 
@@ -453,34 +503,42 @@ impl Chess {
 
     /// Put a piece on a square
     pub fn set(&mut self, piece: PieceType, square_idx: PieceIndex) {
+        if !self.is_on_board(square_idx) || square_idx > 150 {
+            panic!("square out of bound");
+        }
+
         if piece == KING {
             self.kings.white = square_idx;
-
-            if square_idx != 116 {
-                self.can_white_king_side_castle = false;
-                self.can_white_queen_side_castle = false;
-            }
         }
 
         if piece == BLACK_KING {
             self.kings.black = square_idx;
-            if square_idx != 4 {
-                self.can_black_king_side_castle = false;
-                self.can_black_queen_side_castle = false;
-            }
         }
 
         self.board[square_idx as usize] = piece;
+
+        // self.update_castling_rights();
     }
 
-    pub fn moves(&mut self, square_idx: PieceIndex) -> Vec<u8> {
+    pub fn moves(&mut self, square: &str) -> Vec<String> {
+        let square_idx = self.convert_algebraic_notation_to_index(square);
+
+        let moves = self.inner_moves(square_idx);
+
+        moves
+            .iter()
+            .map(|idx| self.convert_index_algebraic_notation(*idx))
+            .collect()
+    }
+
+    fn inner_moves(&mut self, square_idx: PieceIndex) -> Vec<u8> {
         let piece = self.get(square_idx);
 
         if !self.is_friendly(piece) {
-            panic!("can't generate moves for enemy piece, set the turn correctly.");
+            panic!("can't generate inner_moves for enemy piece, set the turn correctly.");
         }
 
-        let moves = match self.remove_color(piece) {
+        let inner_moves = match self.remove_color(piece) {
             PAWN => self.generate_pawn_moves(square_idx),
             MOVED_PAWN => self.generate_pawn_moves(square_idx),
             BISHOP => self.generate_sliding_moves(square_idx, BISHOP_DELTAS.to_vec()),
@@ -494,7 +552,7 @@ impl Chess {
 
         let mut legal_moves: Vec<u8> = vec![];
 
-        for idx in moves {
+        for idx in inner_moves {
             let destination_idx = idx;
             // play the move
             self.inner_move_piece(square_idx, destination_idx as u8);
@@ -511,7 +569,7 @@ impl Chess {
     }
 
     pub fn generate_pawn_moves(&mut self, square_idx: PieceIndex) -> Vec<u8> {
-        let mut moves = vec![];
+        let mut inner_moves = vec![];
 
         let pawn = self.get(square_idx);
 
@@ -541,10 +599,10 @@ impl Chess {
                     let is_enemy = !self.is_friendly(piece);
                     // if it is, is there an enemy piece it can capture?
                     if piece != EMPTY && is_enemy {
-                        moves.push(destination_idx);
+                        inner_moves.push(destination_idx);
                     } else if piece == EN_PASSANT_SQUARE {
                         // en passant
-                        moves.push(destination_idx);
+                        inner_moves.push(destination_idx);
                     }
                 } else {
                     // pawn can only forward if it is not blocked by any piece
@@ -553,17 +611,17 @@ impl Chess {
                     }
 
                     if can_move_forward {
-                        moves.push(destination_idx);
+                        inner_moves.push(destination_idx);
                     }
                 }
             }
         }
 
-        moves
+        inner_moves
     }
 
     pub fn generate_king_moves(&mut self, square_idx: PieceIndex, deltas: Vec<i8>) -> Vec<u8> {
-        let mut moves: Vec<PieceIndex> = vec![];
+        let mut inner_moves: Vec<PieceIndex> = vec![];
 
         for delta in deltas {
             // convert to i16 to prevent overflow
@@ -584,35 +642,28 @@ impl Chess {
 
                     // if enemy piece, we can capture it
                     if !is_friendly {
-                        moves.push(destination_idx);
+                        inner_moves.push(destination_idx);
                     }
                 } else {
-                    if self.is_castling(square_idx, destination_idx) {
-                        let is_king_side_castling =
-                            self.is_king_side_castling(square_idx, destination_idx);
+                    let is_king_side_castling =
+                        self.is_king_side_castling(square_idx, destination_idx);
 
-                        let is_queen_side_castling =
-                            self.is_queen_side_castling(square_idx, destination_idx);
+                    let is_queen_side_castling =
+                        self.is_queen_side_castling(square_idx, destination_idx);
 
-                        if is_king_side_castling {
-                            if self.turn == WHITE && !self.can_white_king_side_castle {
-                                break;
-                            }
+                    let (can_king_side_castle, can_queen_side_castle) = self.get_castling_rights();
 
-                            if self.turn == BLACK && !self.can_black_king_side_castle {
-                                break;
-                            }
-                        }
+                    // if try to castle without castling rights, skip
 
-                        if is_queen_side_castling {
-                            if self.turn == WHITE && !self.can_white_queen_side_castle {
-                                break;
-                            }
-                            if self.turn == BLACK && !self.can_black_queen_side_castle {
-                                break;
-                            }
-                        }
+                    if is_king_side_castling && !can_king_side_castle {
+                        continue;
+                    }
 
+                    if is_queen_side_castling && !can_queen_side_castle {
+                        continue;
+                    }
+
+                    if is_king_side_castling || is_queen_side_castling {
                         let rook_idx: PieceIndex = if is_king_side_castling {
                             destination_idx + 1
                         } else if is_queen_side_castling {
@@ -644,31 +695,22 @@ impl Chess {
                             && self.is_friendly(piece)
                             && !is_checked
                         {
-                            moves.push(destination_idx);
+                            inner_moves.push(destination_idx);
                         }
 
-                        // if the piece is not an *unmoved* rook, then the king loses castling rights
-                        if self.remove_color(piece) != ROOK && self.is_friendly(piece) {
-                            if is_king_side_castling {
-                                self.update_castling_rights(false, true);
-                            }
-
-                            if is_queen_side_castling {
-                                self.update_castling_rights(true, false);
-                            }
-                        }
+                        self.update_castling_rights();
                     } else {
-                        moves.push(destination_idx);
+                        inner_moves.push(destination_idx);
                     }
                 }
             }
         }
 
-        moves
+        inner_moves
     }
 
     pub fn generate_knight_moves(&mut self, square_idx: PieceIndex) -> Vec<u8> {
-        let mut moves: Vec<PieceIndex> = vec![];
+        let mut inner_moves: Vec<PieceIndex> = vec![];
 
         for delta in KNIGHT_DELTAS {
             // convert to i16 to prevent overflow
@@ -681,15 +723,15 @@ impl Chess {
                     continue;
                 }
 
-                moves.push(destination_idx as PieceIndex);
+                inner_moves.push(destination_idx as PieceIndex);
             }
         }
 
-        moves
+        inner_moves
     }
 
     pub fn generate_sliding_moves(&mut self, square_idx: PieceIndex, deltas: Vec<i8>) -> Vec<u8> {
-        let mut moves: Vec<PieceIndex> = vec![];
+        let mut inner_moves: Vec<PieceIndex> = vec![];
 
         for delta in deltas {
             // convert to i16 to prevent overflow
@@ -704,29 +746,29 @@ impl Chess {
                         break;
                     } else {
                         // if we encounter an enemy piece, we can capture it but cannot move further
-                        moves.push(destination_idx as PieceIndex);
+                        inner_moves.push(destination_idx as PieceIndex);
                         break;
                     }
                 }
 
-                moves.push(destination_idx as PieceIndex);
+                inner_moves.push(destination_idx as PieceIndex);
 
                 // if the destination square is on the board, we keep searching in that direction until we go off the board
                 destination_idx += delta as i16;
             }
         }
 
-        moves
+        inner_moves
     }
 
     // TODO if this function causes any bugs down the road, just rewrite it by
-    // saving a FEN string of the board everytime a move is made and use the previous FEN when undoing moves
+    // saving a FEN string of the board everytime a move is made and use the previous FEN when undoing inner_moves
     pub fn undo(&mut self) {
-        if let Some(player_move) = self.history.pop() {
-            if player_move.castle {
-                let Move {
+        if let Some(old) = self.history.pop() {
+            if old.castle {
+                let HistoryEntry {
                     to_idx, from_idx, ..
-                } = player_move;
+                } = old;
 
                 let king_side = self.is_king_side_castling(from_idx, to_idx);
                 let queen_side = self.is_queen_side_castling(from_idx, to_idx);
@@ -734,45 +776,13 @@ impl Chess {
                 if king_side {
                     self.set(ROOK | self.turn, to_idx + 1);
                     self.set(EMPTY, from_idx + 1);
-
-                    let queen_side_castling_rights = match self.turn {
-                        WHITE => self.can_white_queen_side_castle,
-                        BLACK => self.can_black_queen_side_castle,
-                        _ => panic!("can't undo castling"),
-                    };
-
-                    self.update_castling_rights(true, queen_side_castling_rights);
                 } else if queen_side {
                     self.set(ROOK | self.turn, to_idx - 2);
                     self.set(EMPTY, from_idx - 1);
-
-                    let king_side_castling_rights = match self.turn {
-                        WHITE => self.can_white_king_side_castle,
-                        BLACK => self.can_black_king_side_castle,
-                        _ => panic!("can't undo castling"),
-                    };
-
-                    self.update_castling_rights(king_side_castling_rights, true);
                 }
             }
 
-            let piece = self.remove_color(player_move.from_piece);
-            if piece == KING || piece == MOVED_KING {
-                let piece = self.remove_mask(piece, MOVED_MASK);
-
-                if piece == KING {
-                    self.kings.white = player_move.from_idx;
-                }
-
-                if piece == BLACK_KING {
-                    self.kings.black = player_move.from_idx;
-                }
-
-                // TODO this is wrong, we just need to store the castling rights in player_move
-                self.update_castling_rights(true, true)
-            }
-
-            if player_move.captured {
+            if old.capture {
                 if self.turn == WHITE {
                     self.white_captures.pop();
                 } else {
@@ -780,35 +790,47 @@ impl Chess {
                 }
             }
 
-            // TODO test this
-            if player_move.en_passant {
-                let from_idx = player_move.from_idx;
+            if old.en_passant_capture {
+                let from_idx = old.from_idx;
 
-                let idx = match player_move.to_idx {
-                    i if i < from_idx => player_move.to_idx + 16,
-                    i if i > from_idx => player_move.to_idx - 16,
+                let idx = match old.to_idx {
+                    i if i < from_idx => old.to_idx + 16,
+                    i if i > from_idx => old.to_idx - 16,
                     _ => panic!("could not calculate en passant squares"),
                 };
 
                 self.set(EN_PASSANT_SQUARE, idx);
 
-                let piece = player_move.from_piece;
+                let piece = old.from_piece;
 
                 if piece == MOVED_PAWN {
-                    self.set(MOVED_BLACK_PAWN, player_move.to_idx + 16);
+                    self.set(MOVED_BLACK_PAWN, old.to_idx + 16);
                 } else if piece == MOVED_BLACK_PAWN {
-                    self.set(MOVED_PAWN, player_move.to_idx - 16);
+                    self.set(MOVED_PAWN, old.to_idx - 16);
                 }
-
-                self.lastest_en_passant_square = player_move.en_passant_square;
             }
 
-            if self.turn == BLACK {
-                self.full_moves -= 1;
+            self.can_black_king_side_castle = old.can_black_king_side_castle;
+            self.can_black_queen_side_castle = old.can_black_queen_side_castle;
+            self.can_white_king_side_castle = old.can_white_king_side_castle;
+            self.can_white_queen_side_castle = old.can_white_queen_side_castle;
+
+            self.half_moves = old.half_moves;
+            self.full_moves = old.full_moves;
+
+            self.lastest_en_passant_square = old.en_passant_square;
+            if let Some(ep_square) = &self.lastest_en_passant_square {
+                let ep_idx = BOARD_MAP
+                    [self.convert_algebraic_notation_to_index(ep_square.as_str()) as usize];
+
+                if self.get(ep_idx) == EMPTY {
+                    self.set(EN_PASSANT_SQUARE, ep_idx);
+                }
             }
+
             // move the pieces back to its original square
-            self.set(player_move.from_piece, player_move.from_idx);
-            self.set(player_move.to_piece, player_move.to_idx);
+            self.set(old.from_piece, old.from_idx);
+            self.set(old.to_piece, old.to_idx);
         }
     }
 
@@ -822,10 +844,12 @@ impl Chess {
 
         let turn = self.turn();
         let mut castling_rights = String::new();
-        let mut en_passant_square = match self.lastest_en_passant_square {
-            Some(sq) => self.convert_index_algebraic_notation(sq),
-            _ => String::from("-"),
+        let en_passant_square = if let Some(sq) = self.lastest_en_passant_square.clone() {
+            sq
+        } else {
+            "-".to_string()
         };
+
         let half_moves = self.half_moves;
         let full_moves = self.full_moves;
 
@@ -863,11 +887,10 @@ impl Chess {
                     empty_square = 0;
                 }
 
-                let color = self.get_color(piece);
-                let original_piece = self.remove_mask(self.remove_color(piece), MOVED_MASK);
+                let piece_type = self.get_type(piece);
 
-                if color == WHITE {
-                    match original_piece {
+                if self.get_color(piece) == WHITE {
+                    match piece_type {
                         PAWN => fen.push_str("P"),
                         ROOK => fen.push_str("R"),
                         KNIGHT => fen.push_str("N"),
@@ -877,7 +900,7 @@ impl Chess {
                         _ => panic!("error generating FEN"),
                     }
                 } else {
-                    match original_piece {
+                    match piece_type {
                         PAWN => fen.push_str("p"),
                         ROOK => fen.push_str("r"),
                         KNIGHT => fen.push_str("n"),
@@ -924,18 +947,18 @@ impl Chess {
         for rank in ranks {
             for piece in rank.chars() {
                 match piece {
-                    'p' => self.set(BLACK_PAWN, ACTUAL_BOARD[idx]),
-                    'r' => self.set(BLACK_ROOK, ACTUAL_BOARD[idx]),
-                    'n' => self.set(BLACK_KNIGHT, ACTUAL_BOARD[idx]),
-                    'b' => self.set(BLACK_BISHOP, ACTUAL_BOARD[idx]),
-                    'q' => self.set(BLACK_QUEEN, ACTUAL_BOARD[idx]),
-                    'k' => self.set(BLACK_KING, ACTUAL_BOARD[idx]),
-                    'P' => self.set(PAWN, ACTUAL_BOARD[idx]),
-                    'R' => self.set(ROOK, ACTUAL_BOARD[idx]),
-                    'N' => self.set(KNIGHT, ACTUAL_BOARD[idx]),
-                    'B' => self.set(BISHOP, ACTUAL_BOARD[idx]),
-                    'Q' => self.set(QUEEN, ACTUAL_BOARD[idx]),
-                    'K' => self.set(KING, ACTUAL_BOARD[idx]),
+                    'p' => self.set(BLACK_PAWN, BOARD_MAP[idx]),
+                    'r' => self.set(BLACK_ROOK, BOARD_MAP[idx]),
+                    'n' => self.set(BLACK_KNIGHT, BOARD_MAP[idx]),
+                    'b' => self.set(BLACK_BISHOP, BOARD_MAP[idx]),
+                    'q' => self.set(BLACK_QUEEN, BOARD_MAP[idx]),
+                    'k' => self.set(BLACK_KING, BOARD_MAP[idx]),
+                    'P' => self.set(PAWN, BOARD_MAP[idx]),
+                    'R' => self.set(ROOK, BOARD_MAP[idx]),
+                    'N' => self.set(KNIGHT, BOARD_MAP[idx]),
+                    'B' => self.set(BISHOP, BOARD_MAP[idx]),
+                    'Q' => self.set(QUEEN, BOARD_MAP[idx]),
+                    'K' => self.set(KING, BOARD_MAP[idx]),
                     '1'..='8' => idx += piece.to_digit(10).unwrap() as usize - 1,
                     _ => panic!("can't load fen pieces"),
                 }
@@ -947,7 +970,7 @@ impl Chess {
         // set turn
         match fen_parts[1] {
             "w" => self.set_turn(WHITE),
-            "b" => self.set_turn(WHITE),
+            "b" => self.set_turn(BLACK),
             _ => panic!("can't load fen turn"),
         }
 
@@ -982,11 +1005,14 @@ impl Chess {
 
         match square {
             // no en passant square
-            "-" => {}
+            "-" => {
+                self.lastest_en_passant_square = None;
+            }
             _ => {
+                self.lastest_en_passant_square = Some(square.to_string());
                 let idx = self.convert_algebraic_notation_to_index(square) as usize;
 
-                self.set(EN_PASSANT_SQUARE, ACTUAL_BOARD[idx]);
+                self.set(EN_PASSANT_SQUARE, BOARD_MAP[idx]);
             }
         }
 
@@ -1016,9 +1042,9 @@ impl Chess {
             let piece = self.get(idx);
 
             if self.is_friendly(piece) {
-                let moves = self.moves(idx);
+                let inner_moves = self.inner_moves(idx);
 
-                if moves.len() > 0 {
+                if inner_moves.len() > 0 {
                     no_legal_moves = false;
                 }
             }
@@ -1031,7 +1057,7 @@ impl Chess {
         self.is_stalemate() || self.is_threefold_repetition() || self.is_50_moves_rule()
     }
 
-    /// stalemate happens when a player has no legal moves and is not in check
+    /// stalemate happens when a player has no legal inner_moves and is not in check
     pub fn is_stalemate(&mut self) -> bool {
         let mut no_legal_moves = true;
 
@@ -1043,9 +1069,9 @@ impl Chess {
             let piece = self.get(idx);
 
             if (piece != EMPTY || piece != EN_PASSANT_SQUARE) && self.is_friendly(piece) {
-                let moves = self.moves(idx);
+                let inner_moves = self.inner_moves(idx);
 
-                if moves.len() > 0 {
+                if inner_moves.len() > 0 {
                     no_legal_moves = false;
                 }
             }
@@ -1054,15 +1080,18 @@ impl Chess {
         !self.in_check() && no_legal_moves
     }
 
-    // TODO fix this lol
     // convert every move to FEN, store it as a unique key in a hashmap
     // if the value >= 3, then it is threefold repetition
     pub fn is_threefold_repetition(&mut self) -> bool {
-        true
+        if let Some(count) = self.unique_positions.get(&self.get_fen()) {
+            *count >= 3
+        } else {
+            false
+        }
     }
 
     pub fn is_50_moves_rule(&mut self) -> bool {
-        true
+        self.half_moves >= 100
     }
 
     /*
@@ -1173,13 +1202,13 @@ impl Chess {
                 let piece = self.get(attacker_idx);
 
                 // remove the color mask
-                let original_piece = self.remove_mask(self.remove_color(piece), MOVED_MASK);
+                let piece_type = self.get_type(piece);
 
                 // check if that piece can attack from that particular square
-                if (original_piece & attack_bits_mask) == original_piece {
-                    if original_piece == KNIGHT {
+                if (piece_type & attack_bits_mask) == piece_type {
+                    if piece_type == KNIGHT {
                         return true;
-                    } else if original_piece == PAWN {
+                    } else if piece_type == PAWN {
                         let piece = self.remove_mask(piece, MOVED_MASK);
                         is_attacked = piece & attack_bits_mask == piece;
                     } else {
@@ -1238,11 +1267,14 @@ impl Chess {
         let file = parts.next().unwrap();
         let rank = (parts.next().unwrap().to_digit(10).unwrap() - 1) as u8;
 
-        let file = FILES.iter().position(|f| f.eq(&file)).unwrap() as u8;
+        let file = FILES
+            .iter()
+            .position(|f| f.eq(&file.to_string().as_str()))
+            .unwrap() as u8;
 
         // we minus rank from 7 because the board is reversed (upside down)
         // so for example, for "e7", the rank 7 is rank 1 on our board
-        (8 * (7 - rank) + file) as u8
+        (16 * (7 - rank) + file) as u8
     }
 
     pub fn convert_index_algebraic_notation(&self, index: u8) -> String {
@@ -1253,7 +1285,7 @@ impl Chess {
 
         let mut notation = String::new();
 
-        notation.push(file_letter);
+        notation.push_str(file_letter);
         notation.push_str(rank.to_string().as_str());
 
         notation
@@ -1270,7 +1302,9 @@ impl Chess {
     }
 
     fn clear_latest_en_passant_square(&mut self) {
-        if let Some(idx) = self.lastest_en_passant_square {
+        if let Some(sq) = &self.lastest_en_passant_square {
+            let idx = BOARD_MAP[self.convert_algebraic_notation_to_index(sq.as_str()) as usize];
+
             let piece = self.get(idx);
 
             if piece == EN_PASSANT_SQUARE {
@@ -1280,14 +1314,8 @@ impl Chess {
         }
     }
 
-    fn update_castling_rights(&mut self, k: bool, q: bool) {
-        if self.turn == WHITE {
-            self.can_white_king_side_castle = k;
-            self.can_white_queen_side_castle = q;
-        } else {
-            self.can_black_king_side_castle = k;
-            self.can_black_queen_side_castle = q;
-        }
+    fn get_type(&self, piece: PieceType) -> PieceType {
+        self.remove_mask(self.remove_color(piece), MOVED_MASK)
     }
 
     fn get_color(&self, piece: PieceType) -> PieceType {
@@ -1298,17 +1326,57 @@ impl Chess {
         self.remove_mask(piece, COLOR_MASK)
     }
 
-    fn get_castling_rights(&self) {}
+    fn get_castling_rights(&self) -> (bool, bool) {
+        if self.turn == WHITE {
+            (
+                self.can_white_king_side_castle,
+                self.can_white_queen_side_castle,
+            )
+        } else {
+            (
+                self.can_black_king_side_castle,
+                self.can_black_queen_side_castle,
+            )
+        }
+    }
 
-    fn is_castling(&self, from: PieceIndex, to: PieceIndex) -> bool {
-        let can_castle = match self.turn {
-            WHITE => self.can_white_queen_side_castle || self.can_white_king_side_castle,
-            BLACK => self.can_black_queen_side_castle || self.can_black_king_side_castle,
-            _ => panic!("can't check castling rights"),
-        };
+    fn update_castling_rights(&mut self) {
+        if self.kings.white != 116 {
+            self.can_white_king_side_castle = false;
+            self.can_white_queen_side_castle = false;
+        }
 
-        (self.is_queen_side_castling(from, to) || self.is_king_side_castling(from, to))
-            && can_castle
+        if self.kings.black != 4 {
+            self.can_black_king_side_castle = false;
+            self.can_black_queen_side_castle = false;
+        }
+        // 119 = h1
+        // 112 = a1
+        let right_white_rook_idx = 119;
+        let left_white_rook_idx = 112;
+
+        // 7 = h8
+        // 0 = a8
+        let right_black_rook_idx = 7;
+        let left_black_rook_idx = 0;
+
+        // if it isn't an *unmoved* rook, then we can't castle
+
+        if self.get(right_white_rook_idx) != ROOK {
+            self.can_white_king_side_castle = false;
+        }
+
+        if self.get(left_white_rook_idx) != ROOK {
+            self.can_white_queen_side_castle = false;
+        }
+
+        if self.get(right_black_rook_idx) != BLACK_ROOK {
+            self.can_black_king_side_castle = false;
+        }
+
+        if self.get(left_black_rook_idx) != BLACK_ROOK {
+            self.can_black_queen_side_castle = false;
+        }
     }
 
     fn is_queen_side_castling(&self, from: PieceIndex, to: PieceIndex) -> bool {
@@ -1348,7 +1416,7 @@ impl Chess {
     }
 }
 
-// TODO: sort the moves array in tests to ensure they match
+// TODO: sort the inner_moves array in tests to ensure they match
 
 #[cfg(test)]
 mod bishop {
@@ -1362,10 +1430,10 @@ mod bishop {
         chess.set(KING, 55);
         chess.set(BISHOP | BLACK, 86);
 
-        let moves = chess.moves(52);
+        let inner_moves = chess.inner_moves(52);
         let correct_moves = [69, 86, 67, 82, 97, 112, 35, 18, 1, 37, 22, 7];
 
-        assert!(moves.iter().eq(correct_moves.iter()));
+        assert!(inner_moves.iter().eq(correct_moves.iter()));
 
         chess.clear();
 
@@ -1373,10 +1441,10 @@ mod bishop {
         chess.set(KING, 1);
         chess.set(BISHOP | BLACK, 7);
 
-        let moves = chess.moves(0);
+        let inner_moves = chess.inner_moves(0);
         let correct_moves = [17, 34, 51, 68, 85, 102, 119];
 
-        assert!(moves.iter().eq(correct_moves.iter()));
+        assert!(inner_moves.iter().eq(correct_moves.iter()));
 
         chess.clear();
         chess.set_turn(BLACK);
@@ -1385,9 +1453,9 @@ mod bishop {
         chess.set(KING | BLACK, 81);
         chess.set(BISHOP | BLACK, 36);
 
-        let moves = chess.moves(36);
+        let inner_moves = chess.inner_moves(36);
         let correct_moves = [53, 70, 87, 51, 66, 19, 2, 21, 6];
-        assert!(moves.iter().eq(correct_moves.iter()));
+        assert!(inner_moves.iter().eq(correct_moves.iter()));
 
         chess.clear();
         chess.set_turn(BLACK);
@@ -1396,9 +1464,9 @@ mod bishop {
         chess.set(KING | BLACK, 81);
         chess.set(BISHOP | BLACK, 36);
 
-        let moves = chess.moves(36);
+        let inner_moves = chess.inner_moves(36);
         let correct_moves = [53, 70, 87, 51, 66, 19, 2, 21, 6];
-        assert!(moves.iter().eq(correct_moves.iter()));
+        assert!(inner_moves.iter().eq(correct_moves.iter()));
 
         chess.clear();
         chess.set_turn(BLACK);
@@ -1407,10 +1475,10 @@ mod bishop {
         chess.set(KING | BLACK, 7);
         chess.set(BISHOP | BLACK, 112);
 
-        let moves = chess.moves(112);
+        let inner_moves = chess.inner_moves(112);
         let correct_moves = [97, 82, 67, 52, 37, 22];
 
-        assert!(moves.iter().eq(correct_moves.iter()));
+        assert!(inner_moves.iter().eq(correct_moves.iter()));
     }
 
     #[test]
@@ -1421,9 +1489,9 @@ mod bishop {
         chess.set(KING, 112);
         chess.set(BLACK_BISHOP, 97);
 
-        let moves = chess.moves(117);
+        let inner_moves = chess.inner_moves(117);
 
-        assert!(moves.len() == 0);
+        assert!(inner_moves.len() == 0);
 
         chess.clear();
 
@@ -1431,8 +1499,8 @@ mod bishop {
         chess.set(KING, 7);
         chess.set(BISHOP | BLACK, 22);
 
-        let moves = chess.moves(119 as u8);
-        assert!(moves.len() == 0);
+        let inner_moves = chess.inner_moves(119 as u8);
+        assert!(inner_moves.len() == 0);
 
         chess.clear();
 
@@ -1440,8 +1508,8 @@ mod bishop {
         chess.set(KING, 0);
         chess.set(BISHOP | BLACK, 17);
 
-        let moves = chess.moves(67 as u8);
-        assert!(moves.len() == 0);
+        let inner_moves = chess.inner_moves(67 as u8);
+        assert!(inner_moves.len() == 0);
 
         chess.clear();
 
@@ -1452,8 +1520,8 @@ mod bishop {
         chess.set(KING | BLACK, 17);
         chess.set(BISHOP | BLACK, 51);
 
-        let moves = chess.moves(51);
-        assert!(moves.len() == 0);
+        let inner_moves = chess.inner_moves(51);
+        assert!(inner_moves.len() == 0);
 
         chess.clear();
         chess.set_turn(BLACK);
@@ -1462,8 +1530,8 @@ mod bishop {
         chess.set(KING | BLACK, 112);
         chess.set(BISHOP | BLACK, 100);
 
-        let moves = chess.moves(100);
-        assert!(moves.len() == 0);
+        let inner_moves = chess.inner_moves(100);
+        assert!(inner_moves.len() == 0);
 
         chess.clear();
         chess.set_turn(BLACK);
@@ -1472,8 +1540,8 @@ mod bishop {
         chess.set(KING | BLACK, 16);
         chess.set(BISHOP | BLACK, 21);
 
-        let moves = chess.moves(21);
-        assert!(moves.len() == 0);
+        let inner_moves = chess.inner_moves(21);
+        assert!(inner_moves.len() == 0);
     }
 
     #[test]
@@ -1484,10 +1552,10 @@ mod bishop {
         chess.set(KING, 0);
         chess.set(BISHOP | BLACK, 17);
 
-        let moves = chess.moves(2 as u8);
+        let inner_moves = chess.inner_moves(2 as u8);
         let correct_moves = [17];
 
-        assert!(moves.iter().eq(correct_moves.iter()));
+        assert!(inner_moves.iter().eq(correct_moves.iter()));
 
         chess.clear();
 
@@ -1495,10 +1563,10 @@ mod bishop {
         chess.set(KING, 37);
         chess.set(BISHOP | BLACK, 54);
 
-        let moves = chess.moves(99 as u8);
+        let inner_moves = chess.inner_moves(99 as u8);
         let correct_moves = [54];
 
-        assert!(moves.iter().eq(correct_moves.iter()));
+        assert!(inner_moves.iter().eq(correct_moves.iter()));
 
         // ====== BLACK =====
 
@@ -1509,10 +1577,10 @@ mod bishop {
         chess.set(KING | BLACK, 66);
         chess.set(BISHOP | BLACK, 17);
 
-        let moves = chess.moves(17);
+        let inner_moves = chess.inner_moves(17);
         let correct_moves = [32];
 
-        assert!(moves.iter().eq(correct_moves.iter()));
+        assert!(inner_moves.iter().eq(correct_moves.iter()));
 
         chess.clear();
         chess.set_turn(BLACK);
@@ -1521,10 +1589,10 @@ mod bishop {
         chess.set(KING | BLACK, 7);
         chess.set(BISHOP | BLACK, 118);
 
-        let moves = chess.moves(118);
+        let inner_moves = chess.inner_moves(118);
         let correct_moves = [67];
 
-        assert!(moves.iter().eq(correct_moves.iter()));
+        assert!(inner_moves.iter().eq(correct_moves.iter()));
     }
 
     #[test]
@@ -1535,10 +1603,10 @@ mod bishop {
         chess.set(PAWN, 37);
         chess.set(BISHOP | BLACK, 67);
 
-        let moves = chess.moves(51);
+        let inner_moves = chess.inner_moves(51);
         let correct_moves = [68, 85, 102, 119, 66, 81, 96, 34, 17, 0, 36, 21, 6];
 
-        assert!(moves.iter().eq(correct_moves.iter()));
+        assert!(inner_moves.iter().eq(correct_moves.iter()));
 
         chess.clear();
 
@@ -1547,10 +1615,10 @@ mod bishop {
         chess.set(PAWN, 102);
         chess.set(BISHOP | BLACK, 85);
 
-        let moves = chess.moves(118);
+        let inner_moves = chess.inner_moves(118);
         let correct_moves = [101, 84, 67, 50, 33, 16, 103];
 
-        assert!(moves.iter().eq(correct_moves.iter()));
+        assert!(inner_moves.iter().eq(correct_moves.iter()));
 
         chess.clear();
 
@@ -1559,10 +1627,10 @@ mod bishop {
         chess.set(PAWN, 34);
         chess.set(BISHOP | BLACK, 51);
 
-        let moves = chess.moves(66);
+        let inner_moves = chess.inner_moves(66);
         let correct_moves = [83, 100, 117, 81, 96, 49, 32, 51];
 
-        assert!(moves.iter().eq(correct_moves.iter()));
+        assert!(inner_moves.iter().eq(correct_moves.iter()));
 
         // ==== BLACK ====
         chess.clear();
@@ -1573,10 +1641,10 @@ mod bishop {
         chess.set(PAWN | BLACK, 19);
         chess.set(BISHOP | BLACK, 84);
 
-        let moves = chess.moves(84);
+        let inner_moves = chess.inner_moves(84);
         let correct_moves = [101, 118, 99, 114, 67, 50, 33, 16, 69, 54, 39];
 
-        assert!(moves.iter().eq(correct_moves.iter()));
+        assert!(inner_moves.iter().eq(correct_moves.iter()));
 
         chess.clear();
         chess.set_turn(BLACK);
@@ -1586,10 +1654,10 @@ mod bishop {
         chess.set(PAWN | BLACK, 70);
         chess.set(BISHOP | BLACK, 98);
 
-        let moves = chess.moves(98);
+        let inner_moves = chess.inner_moves(98);
         let correct_moves = [115, 113, 81, 64, 83, 68, 53];
 
-        assert!(moves.iter().eq(correct_moves.iter()));
+        assert!(inner_moves.iter().eq(correct_moves.iter()));
     }
 }
 
@@ -1603,31 +1671,37 @@ mod pawn {
 
         chess.set_turn(BLACK);
         chess.set(Piece::BLACK_PAWN, 98);
-        let moves = chess.moves(98);
+        let inner_moves = chess.inner_moves(98);
         let correct_moves = [114];
 
-        assert!(moves.iter().eq(correct_moves.iter()));
+        assert!(inner_moves.iter().eq(correct_moves.iter()));
 
         chess.clear();
 
         chess.set_turn(BLACK);
         chess.set(Piece::BLACK_PAWN, 2);
-        let moves = chess.moves(2);
+        let inner_moves = chess.inner_moves(2);
         let correct_moves = [18, 34];
-        assert!(moves.iter().eq(correct_moves.iter()));
+        assert!(inner_moves.iter().eq(correct_moves.iter()));
 
         chess.clear();
 
         chess.set(Piece::PAWN, 34);
-        let moves = chess.moves(34);
+        let inner_moves = chess.inner_moves(34);
         let correct_moves = [18, 2];
-        assert!(moves.iter().eq(correct_moves.iter()));
+        assert!(inner_moves.iter().eq(correct_moves.iter()));
 
         chess.clear();
 
         chess.set(Piece::PAWN, 23);
-        let moves = chess.moves(23);
+        let inner_moves = chess.inner_moves(23);
         let correct_moves = [7];
-        assert!(moves.iter().eq(correct_moves.iter()));
+        assert!(inner_moves.iter().eq(correct_moves.iter()));
     }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn lol() {}
 }
