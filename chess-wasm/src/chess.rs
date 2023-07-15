@@ -521,7 +521,7 @@ impl Chess {
     }
 
     pub fn moves(&mut self, square: &str) -> Vec<String> {
-        let square_idx = self.convert_algebraic_notation_to_index(square);
+        let square_idx = BOARD_MAP[self.convert_algebraic_notation_to_index(square) as usize];
 
         let moves = self.inner_moves(square_idx);
 
@@ -1274,7 +1274,7 @@ impl Chess {
 
         // we minus rank from 7 because the board is reversed (upside down)
         // so for example, for "e7", the rank 7 is rank 1 on our board
-        (16 * (7 - rank) + file) as u8
+        (8 * (7 - rank) + file) as u8
     }
 
     pub fn convert_index_algebraic_notation(&self, index: u8) -> String {

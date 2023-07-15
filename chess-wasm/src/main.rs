@@ -27,8 +27,8 @@ fn main() {
 
     // println!("{}", captures.get(2).map_or("", |m| m.as_str()));
 
-    // println!("{:?}", chess);
-    println!("{:?}", chess.get_fen());
+    println!("{:?}", chess.moves("f2"));
+    // println!("{:?}", chess.get_fen());
 
     // // chess.set_turn(BLACK);
     // chess.set(Piece::KING, 116);
