@@ -146,6 +146,7 @@ struct HistoryEntry {
     castle: bool,
     capture: bool,
     en_passant_capture: bool,
+    promotion: bool,
     half_moves: u8,
     full_moves: u8,
     en_passant_square: Option<String>,
@@ -154,6 +155,16 @@ struct HistoryEntry {
     can_black_king_side_castle: bool,
     can_black_queen_side_castle: bool,
 }
+
+#[derive(Debug)]
+struct Move {
+    from: PieceIndex,
+    to: PieceIndex,
+    // in_check: bool,
+    // opponent_in_check: bool,
+}
+
+// impl Vec<Move> {}
 
 #[derive(Debug)]
 struct King {
@@ -215,9 +226,14 @@ impl Chess {
         }
     }
 
-    pub fn move_piece(&mut self, move_notation: &str) {
+    pub fn move_piece(&mut self, move_notation: &str) -> String {
+        self.half_moves += 1;
+
         let parts: Vec<char> = move_notation.chars().collect();
-        let move_regex = Regex::new(r"^([KQRBN])([a-h]|[1-8])?(x)?([a-h])([1-8])([+#])?$").unwrap();
+        let move_regex =
+            Regex::new(r"^([KQRBN])?([a-h]|[1-8])?(x)?([a-h])([1-8])(=)?([KQRBN])?([+#])?$")
+                .unwrap();
+        // let promotion_regex = Regex::new(r"^([a-h])([1-8])=([KQRBN])$").unwrap();
 
         // king-side castle
         if move_notation == "0-0" {
@@ -227,6 +243,12 @@ impl Chess {
                 }
 
                 let legal_moves = self.inner_moves(self.kings.white);
+
+                // let m = Move {
+                //     from: self.kings.white,
+                //     to: 118,
+                //     opponent_in_check: false,
+                // };
 
                 if legal_moves.contains(&118) {
                     self.inner_move_piece(self.kings.white, 118);
@@ -274,49 +296,47 @@ impl Chess {
                 }
             }
         } else {
+            let captures = move_regex
+                .captures(move_notation)
+                .expect("Invalid move notation");
+
+            let piece_identifer = captures.get(2).map_or("", |m| m.as_str());
+            let is_capture = captures.get(3).map_or(false, |_| true);
+            let to_file = captures.get(4).map_or("", |m| m.as_str());
+            let to_rank = captures.get(5).map_or("", |m| m.as_str());
+            let is_promotion = captures.get(6).map_or(false, |_| true);
+            let promotion_piece = captures.get(7).map_or("", |m| m.as_str());
+
+            let mut from_idx: Option<PieceIndex> = None;
+            let idx = self
+                .convert_algebraic_notation_to_index(format!("{}{}", to_file, to_rank).as_str());
+
+            let to_idx = BOARD_MAP[idx as usize];
+            let target_piece = self.get(to_idx);
+
+            if is_capture && (self.is_friendly(target_piece) || target_piece == EMPTY) {
+                panic!("invalid capture")
+            }
+
+            let mut target_file = None;
+            let mut target_rank = None;
+
+            if !piece_identifer.is_empty() {
+                if is_number(piece_identifer) {
+                    target_rank = Some(piece_identifer.parse::<u8>().unwrap());
+                } else {
+                    target_file =
+                        Some(FILES.iter().position(|f| f.eq(&piece_identifer)).unwrap() as u8);
+                }
+            }
+
             if parts[0].is_uppercase() {
                 // [a-h][file-rank-identifier][a-h][file]
                 // [a-h]x[a-h][file]
                 // [a-h][file-rank-identifier]x[a-h][file]
 
-                let captures = move_regex
-                    .captures(move_notation)
-                    .expect("Invalid move notation");
-
-                let piece_type = captures.get(1).unwrap().as_str();
-                let piece_identifer = captures.get(2).map_or("", |m| m.as_str());
-                let is_capture = captures.get(3).map_or(false, |_| true);
-                let to_file = captures.get(4).map_or("", |m| m.as_str());
-                let to_rank = captures.get(5).map_or("", |m| m.as_str());
-                let side_effect = captures.get(6).map_or("", |m| m.as_str()); // + = check, # = checkmate, `=` = promotion
-
-                let mut from_idx: Option<PieceIndex> = None;
-                let idx = self.convert_algebraic_notation_to_index(
-                    format!("{}{}", to_file, to_rank).as_str(),
-                );
-
-                let to_idx = BOARD_MAP[idx as usize];
-
                 // let mut inner_moves: Vec<PieceIndex> = vec![];
                 let mut count = 0;
-
-                let target_piece = self.get(to_idx);
-
-                if is_capture && (self.is_friendly(target_piece) || target_piece == EMPTY) {
-                    panic!("invalid capture")
-                }
-
-                // TODO what about rank?
-                let mut target_file = None;
-                let mut target_rank = None;
-                if !piece_identifer.is_empty() {
-                    if is_number(piece_identifer) {
-                        target_rank = Some(piece_identifer.parse::<u8>().unwrap());
-                    } else {
-                        target_file =
-                            Some(FILES.iter().position(|f| f.eq(&piece_identifer)).unwrap() as u8);
-                    }
-                }
 
                 for idx in 0..BOARD_SIZE {
                     if !self.is_on_board(idx) {
@@ -379,7 +399,59 @@ impl Chess {
                     println!("Can't find piece at from_idx")
                 }
             } else {
+                let rank = 8 - ((to_idx >> 4) + 1) + 1;
+
+                if rank == 1 || rank == 8 {
+                    if !is_promotion {
+                        panic!("Invalid promotion");
+                    }
+
+                    if is_promotion {
+                        if promotion_piece.is_empty() {
+                            panic!("Must choose a piece for promotion");
+                        }
+                    }
+                }
+
                 // pawn move
+                for idx in 0..BOARD_SIZE {
+                    if !self.is_on_board(idx) {
+                        continue;
+                    }
+
+                    let piece = self.get(idx);
+                    let piece_type = self.get_type(piece);
+
+                    if piece_type == PAWN && self.is_friendly(piece) {
+                        let _moves = self.inner_moves(idx);
+
+                        if !_moves.contains(&to_idx) {
+                            continue;
+                        }
+                        from_idx = Some(idx);
+                    }
+                }
+
+                if let Some(from_idx) = from_idx {
+                    self.inner_move_piece(from_idx, to_idx);
+
+                    if is_promotion {
+                        let piece = match promotion_piece {
+                            "K" => KING,
+                            "Q" => QUEEN,
+                            "R" => ROOK,
+                            "B" => BISHOP,
+                            "N" => KNIGHT,
+                            _ => {
+                                panic!("Invalid piece")
+                            }
+                        };
+
+                        self.set(piece, to_idx);
+                    }
+                } else {
+                    println!("Can't find piece at from_idx")
+                }
             }
         }
 
@@ -387,10 +459,26 @@ impl Chess {
             self.full_moves += 1;
         }
 
-        self.half_moves += 1;
         let position = self.get_fen();
         *self.unique_positions.entry(position).or_insert(0) += 1;
         self.change_turn();
+
+        if self.is_draw() {
+            println!("game drawn");
+        }
+
+        if self.is_checkmate() {
+            println!("game over by checkmate");
+            let new_notation = move_notation.to_string().push('#');
+            new_notation
+        }
+
+        if self.in_check() {
+            let new_notation = move_notation.to_string().push('+');
+            new_notation
+        }
+
+        move_notation.to_string()
     }
 
     pub fn inner_move_piece(&mut self, from_idx: PieceIndex, to_idx: PieceIndex) {
@@ -412,6 +500,7 @@ impl Chess {
                 castle: false,
                 capture: false,
                 en_passant_capture: false,
+                promotion: false,
                 half_moves: self.half_moves,
                 full_moves: self.full_moves,
                 en_passant_square: self.lastest_en_passant_square.clone(),
@@ -438,8 +527,9 @@ impl Chess {
                     self.set(EN_PASSANT_SQUARE, idx);
                     self.lastest_en_passant_square =
                         Some(self.convert_index_algebraic_notation(idx));
-                    self.half_moves = 0;
                 }
+
+                self.half_moves = 0;
             } else if piece_type == MOVED_PAWN {
                 if to_piece == EN_PASSANT_SQUARE {
                     if self.turn == BLACK {
@@ -453,6 +543,12 @@ impl Chess {
                     history_entry.capture = true;
                     history_entry.en_passant_capture = true;
                     self.half_moves = 0;
+                }
+
+                let rank = 8 - ((to_idx >> 4) + 1) + 1;
+
+                if rank == 1 || rank == 8 {
+                    history_entry.promotion = true;
                 }
             } else if piece_type == KING {
                 self.update_kings_position(to_idx);
@@ -527,11 +623,11 @@ impl Chess {
 
         moves
             .iter()
-            .map(|idx| self.convert_index_algebraic_notation(*idx))
+            .map(|m| self.convert_index_algebraic_notation(*m))
             .collect()
     }
 
-    fn inner_moves(&mut self, square_idx: PieceIndex) -> Vec<u8> {
+    fn inner_moves(&mut self, square_idx: PieceIndex) -> Vec<PieceIndex> {
         let piece = self.get(square_idx);
 
         if !self.is_friendly(piece) {
@@ -550,15 +646,21 @@ impl Chess {
             _ => vec![],
         };
 
-        let mut legal_moves: Vec<u8> = vec![];
+        let mut legal_moves: Vec<PieceIndex> = vec![];
 
         for idx in inner_moves {
-            let destination_idx = idx;
+            let to_idx = idx;
             // play the move
-            self.inner_move_piece(square_idx, destination_idx as u8);
+            self.inner_move_piece(square_idx, to_idx as u8);
 
             if !self.in_check() {
-                legal_moves.push(destination_idx);
+                legal_moves.push(to_idx);
+                // legal_moves.push(Move {
+                //     // Optimize this later?
+                //     // opponent_in_check: self.opponent_in_check(),
+                //     from: square_idx,
+                //     to: to_idx,
+                // });
             }
 
             // revert the move
@@ -809,6 +911,10 @@ impl Chess {
                     self.set(MOVED_PAWN, old.to_idx - 16);
                 }
             }
+
+            // if old.promotion {
+
+            // }
 
             self.can_black_king_side_castle = old.can_black_king_side_castle;
             self.can_black_queen_side_castle = old.can_black_queen_side_castle;
