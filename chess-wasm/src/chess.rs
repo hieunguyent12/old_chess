@@ -1,4 +1,5 @@
 use crate::chess::Piece::*;
+use crate::errors::*;
 use regex::Regex;
 use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
@@ -146,6 +147,7 @@ struct HistoryEntry {
     castle: bool,
     capture: bool,
     en_passant_capture: bool,
+    en_passant_move: bool,
     promotion: bool,
     half_moves: u8,
     full_moves: u8,
@@ -226,20 +228,19 @@ impl Chess {
         }
     }
 
-    pub fn move_piece(&mut self, move_notation: &str) -> String {
-        self.half_moves += 1;
-
+    pub fn move_piece(&mut self, move_notation: &str) -> Result<String, MoveError> {
         let parts: Vec<char> = move_notation.chars().collect();
         let move_regex =
             Regex::new(r"^([KQRBN])?([a-h]|[1-8])?(x)?([a-h])([1-8])(=)?([KQRBN])?([+#])?$")
                 .unwrap();
-        // let promotion_regex = Regex::new(r"^([a-h])([1-8])=([KQRBN])$").unwrap();
+
+        // TODO is there anyway we can reduce the noise?
 
         // king-side castle
-        if move_notation == "0-0" {
+        if move_notation == "O-O" {
             if self.turn == WHITE {
                 if !self.can_white_king_side_castle {
-                    panic!("can't castle kingside");
+                    return Err(MoveError::IllegalKingSideCastle);
                 }
 
                 let legal_moves = self.inner_moves(self.kings.white);
@@ -253,11 +254,11 @@ impl Chess {
                 if legal_moves.contains(&118) {
                     self.inner_move_piece(self.kings.white, 118);
                 } else {
-                    panic!("illegal move, can't castle kingside");
+                    return Err(MoveError::IllegalKingSideCastle);
                 }
             } else {
                 if !self.can_black_king_side_castle {
-                    panic!("can't castle kingside");
+                    return Err(MoveError::IllegalKingSideCastle);
                 }
 
                 let legal_moves = self.inner_moves(self.kings.black);
@@ -265,14 +266,14 @@ impl Chess {
                 if legal_moves.contains(&6) {
                     self.inner_move_piece(self.kings.black, 6);
                 } else {
-                    panic!("illegal move, can't castle kingside");
+                    return Err(MoveError::IllegalKingSideCastle);
                 }
             }
         // queen side castle
-        } else if move_notation == "0-0-0" {
+        } else if move_notation == "O-O-O" {
             if self.turn == WHITE {
                 if !self.can_white_queen_side_castle {
-                    panic!("can't castle queenside");
+                    return Err(MoveError::IllegalQueenSideCastle);
                 }
 
                 let legal_moves = self.inner_moves(self.kings.white);
@@ -280,11 +281,11 @@ impl Chess {
                 if legal_moves.contains(&114) {
                     self.inner_move_piece(self.kings.white, 114);
                 } else {
-                    panic!("illegal move, can't castle queenside");
+                    return Err(MoveError::IllegalQueenSideCastle);
                 }
             } else {
                 if !self.can_black_queen_side_castle {
-                    panic!("can't castle queenside");
+                    return Err(MoveError::IllegalQueenSideCastle);
                 }
 
                 let legal_moves = self.inner_moves(self.kings.black);
@@ -292,10 +293,11 @@ impl Chess {
                 if legal_moves.contains(&2) {
                     self.inner_move_piece(self.kings.black, 2);
                 } else {
-                    panic!("illegal move, can't castle queenside");
+                    return Err(MoveError::IllegalQueenSideCastle);
                 }
             }
         } else {
+            // TODO error for this
             let captures = move_regex
                 .captures(move_notation)
                 .expect("Invalid move notation");
@@ -314,8 +316,12 @@ impl Chess {
             let to_idx = BOARD_MAP[idx as usize];
             let target_piece = self.get(to_idx);
 
-            if is_capture && (self.is_friendly(target_piece) || target_piece == EMPTY) {
-                panic!("invalid capture")
+            // en passant only if piece is pawn
+            if is_capture
+                && ((self.is_friendly(target_piece) && target_piece != EN_PASSANT_SQUARE)
+                    || target_piece == EMPTY)
+            {
+                return Err(MoveError::IllegalCapture);
             }
 
             let mut target_file = None;
@@ -335,8 +341,17 @@ impl Chess {
                 // [a-h]x[a-h][file]
                 // [a-h][file-rank-identifier]x[a-h][file]
 
-                // let mut inner_moves: Vec<PieceIndex> = vec![];
                 let mut count = 0;
+                let target_type = match parts[0] {
+                    'K' => KING,
+                    'Q' => QUEEN,
+                    'R' => ROOK,
+                    'B' => BISHOP,
+                    'N' => KNIGHT,
+                    _ => {
+                        return Err(MoveError::UnknownPiece);
+                    }
+                };
 
                 for idx in 0..BOARD_SIZE {
                     if !self.is_on_board(idx) {
@@ -346,19 +361,10 @@ impl Chess {
                     let piece = self.get(idx);
                     let piece_type = self.get_type(piece);
 
-                    let target_type = match parts[0] {
-                        'K' => KING,
-                        'Q' => QUEEN,
-                        'R' => ROOK,
-                        'B' => BISHOP,
-                        'N' => KNIGHT,
-                        _ => {
-                            panic!("Invalid piece")
-                        }
-                    };
-
                     if piece_type == target_type && self.is_friendly(piece) {
                         count += 1;
+
+                        // TODO use .moves instead of .inner_moves so we don't have to convert the index
                         let _moves = self.inner_moves(idx);
                         let file = idx & 7;
                         let rank = 8 - ((idx >> 4) + 1) + 1;
@@ -370,22 +376,22 @@ impl Chess {
                         if let Some(target_file) = target_file {
                             if file == target_file {
                                 if count >= 2 && _moves.contains(&to_idx) {
-                                    panic!("don't know which piece to move");
+                                    return Err(MoveError::AmbiguousMoveNotation);
                                 }
                                 from_idx = Some(idx);
                             }
                         } else if let Some(target_rank) = target_rank {
                             if rank == target_rank {
                                 if count >= 2 && _moves.contains(&to_idx) {
-                                    panic!("don't know which piece to move");
+                                    return Err(MoveError::AmbiguousMoveNotation);
                                 }
                                 from_idx = Some(idx);
                             }
                         } else {
-                            if count >= 2 && _moves.contains(&to_idx) {
+                            if count >= 2 && _moves.contains(&to_idx) && from_idx != None {
                                 // if the second piece can also move to that location, then we panic
                                 // because we don't know which piece to move
-                                panic!("don't know which piece to move");
+                                return Err(MoveError::AmbiguousMoveNotation);
                             }
 
                             from_idx = Some(idx);
@@ -396,19 +402,23 @@ impl Chess {
                 if let Some(from_idx) = from_idx {
                     self.inner_move_piece(from_idx, to_idx)
                 } else {
-                    println!("Can't find piece at from_idx")
+                    return Err(MoveError::InvalidPieceToMove);
                 }
             } else {
                 let rank = 8 - ((to_idx >> 4) + 1) + 1;
 
-                if rank == 1 || rank == 8 {
+                if is_promotion && (rank > 1 && rank < 8) {
+                    return Err(MoveError::InvalidPromotion);
+                }
+
+                if rank == 0 || rank == 8 {
                     if !is_promotion {
-                        panic!("Invalid promotion");
+                        return Err(MoveError::InvalidPromotion);
                     }
 
                     if is_promotion {
                         if promotion_piece.is_empty() {
-                            panic!("Must choose a piece for promotion");
+                            return Err(MoveError::InvalidPromotion);
                         }
                     }
                 }
@@ -426,6 +436,7 @@ impl Chess {
                         let _moves = self.inner_moves(idx);
 
                         if !_moves.contains(&to_idx) {
+                            // println!("{} {:?}", idx, _moves);
                             continue;
                         }
                         from_idx = Some(idx);
@@ -442,15 +453,13 @@ impl Chess {
                             "R" => ROOK,
                             "B" => BISHOP,
                             "N" => KNIGHT,
-                            _ => {
-                                panic!("Invalid piece")
-                            }
+                            _ => return Err(MoveError::InvalidPromotion),
                         };
 
                         self.set(piece, to_idx);
                     }
                 } else {
-                    println!("Can't find piece at from_idx")
+                    return Err(MoveError::InvalidPieceToMove);
                 }
             }
         }
@@ -459,26 +468,30 @@ impl Chess {
             self.full_moves += 1;
         }
 
-        let position = self.get_fen();
-        *self.unique_positions.entry(position).or_insert(0) += 1;
+        let fen = self.get_fen();
+        let position = fen.split(" ").collect::<Vec<&str>>()[0];
+
+        *self
+            .unique_positions
+            .entry(position.to_string())
+            .or_insert(0) += 1;
         self.change_turn();
+        self.update_castling_rights();
 
         if self.is_draw() {
             println!("game drawn");
         }
 
+        let mut new_notation = move_notation.to_string();
+
         if self.is_checkmate() {
             println!("game over by checkmate");
-            let new_notation = move_notation.to_string().push('#');
-            new_notation
+            new_notation.push('#');
+        } else if self.in_check() {
+            new_notation.push('+');
         }
 
-        if self.in_check() {
-            let new_notation = move_notation.to_string().push('+');
-            new_notation
-        }
-
-        move_notation.to_string()
+        Ok(new_notation)
     }
 
     pub fn inner_move_piece(&mut self, from_idx: PieceIndex, to_idx: PieceIndex) {
@@ -490,7 +503,7 @@ impl Chess {
             }
 
             let to_piece = self.get(to_idx);
-            let piece_type = self.get_type(piece);
+            let piece_type = self.remove_color(piece);
 
             let mut history_entry = HistoryEntry {
                 from_idx,
@@ -500,6 +513,7 @@ impl Chess {
                 castle: false,
                 capture: false,
                 en_passant_capture: false,
+                en_passant_move: false,
                 promotion: false,
                 half_moves: self.half_moves,
                 full_moves: self.full_moves,
@@ -527,9 +541,10 @@ impl Chess {
                     self.set(EN_PASSANT_SQUARE, idx);
                     self.lastest_en_passant_square =
                         Some(self.convert_index_algebraic_notation(idx));
+                    history_entry.en_passant_move = true;
                 }
 
-                self.half_moves = 0;
+                self.reset_half_moves();
             } else if piece_type == MOVED_PAWN {
                 if to_piece == EN_PASSANT_SQUARE {
                     if self.turn == BLACK {
@@ -542,7 +557,7 @@ impl Chess {
 
                     history_entry.capture = true;
                     history_entry.en_passant_capture = true;
-                    self.half_moves = 0;
+                    self.reset_half_moves();
                 }
 
                 let rank = 8 - ((to_idx >> 4) + 1) + 1;
@@ -550,6 +565,7 @@ impl Chess {
                 if rank == 1 || rank == 8 {
                     history_entry.promotion = true;
                 }
+                self.reset_half_moves();
             } else if piece_type == KING {
                 self.update_kings_position(to_idx);
 
@@ -568,16 +584,16 @@ impl Chess {
                 }
             } else if piece_type == MOVED_KING {
                 self.update_kings_position(to_idx);
+            } else {
+                self.half_moves += 1;
             }
 
             // check if we are capturing a piece
-            if to_piece != EMPTY && !self.is_friendly(to_piece) {
+            if to_piece != EMPTY && to_piece != EN_PASSANT_SQUARE && !self.is_friendly(to_piece) {
                 self.capture(to_piece);
                 history_entry.capture = true;
-                self.half_moves = 0;
+                self.reset_half_moves();
             }
-
-            self.update_castling_rights();
 
             self.set(piece, to_idx);
             self.set(Piece::EMPTY, from_idx);
@@ -619,15 +635,60 @@ impl Chess {
     pub fn moves(&mut self, square: &str) -> Vec<String> {
         let square_idx = BOARD_MAP[self.convert_algebraic_notation_to_index(square) as usize];
 
+        if !self.is_on_board(square_idx) {
+            panic!("invalid square");
+        }
+
         let moves = self.inner_moves(square_idx);
+
+        let piece = self.get(square_idx);
+        let piece_type = self.get_type(piece);
+
+        let prefix = match piece_type {
+            KING => "K",
+            QUEEN => "Q",
+            ROOK => "R",
+            BISHOP => "B",
+            KNIGHT => "N",
+            PAWN => "",
+            _ => {
+                panic!("invalid piece")
+            }
+        };
 
         moves
             .iter()
-            .map(|m| self.convert_index_algebraic_notation(*m))
+            .map(|m| {
+                // TODO: use a Move struct to make our lives easier
+
+                if *m == 118 && piece_type == KING {
+                    return String::from("O-O");
+                } else if *m == 114 && piece_type == KING {
+                    return String::from("O-O-O");
+                } else {
+                    let to = self.get(*m);
+
+                    if to == EN_PASSANT_SQUARE {
+                        let file = square_idx & 7;
+
+                        return format!(
+                            "{}x{}",
+                            FILES[file as usize],
+                            self.convert_index_algebraic_notation(*m)
+                        );
+                    }
+
+                    if to != EMPTY && !self.is_friendly(to) {
+                        return format!("{}x{}", prefix, self.convert_index_algebraic_notation(*m));
+                    }
+
+                    return format!("{}{}", prefix, self.convert_index_algebraic_notation(*m));
+                }
+            })
             .collect()
     }
 
-    fn inner_moves(&mut self, square_idx: PieceIndex) -> Vec<PieceIndex> {
+    pub fn inner_moves(&mut self, square_idx: PieceIndex) -> Vec<PieceIndex> {
         let piece = self.get(square_idx);
 
         if !self.is_friendly(piece) {
@@ -654,6 +715,7 @@ impl Chess {
             self.inner_move_piece(square_idx, to_idx as u8);
 
             if !self.in_check() {
+                // println!("{:?}", self.board);
                 legal_moves.push(to_idx);
                 // legal_moves.push(Move {
                 //     // Optimize this later?
@@ -703,8 +765,17 @@ impl Chess {
                     if piece != EMPTY && is_enemy {
                         inner_moves.push(destination_idx);
                     } else if piece == EN_PASSANT_SQUARE {
-                        // en passant
-                        inner_moves.push(destination_idx);
+                        if self.turn == WHITE {
+                            let below = self.get(destination_idx + 16);
+                            if !self.is_friendly(below) && self.get_type(below) == PAWN {
+                                inner_moves.push(destination_idx);
+                            }
+                        } else {
+                            let above = self.get(destination_idx - 16);
+                            if !self.is_friendly(above) && self.get_type(above) == PAWN {
+                                inner_moves.push(destination_idx);
+                            }
+                        }
                     }
                 } else {
                     // pawn can only forward if it is not blocked by any piece
@@ -733,7 +804,7 @@ impl Chess {
                 let piece = self.get(destination_idx);
                 let is_friendly = self.is_friendly(piece);
 
-                if piece != EMPTY {
+                if piece != EMPTY && piece != EN_PASSANT_SQUARE {
                     let is_castling_move = self.is_king_side_castling(square_idx, destination_idx)
                         || self.is_queen_side_castling(square_idx, destination_idx);
 
@@ -776,11 +847,16 @@ impl Chess {
 
                         let piece = self.get(rook_idx);
                         let mut is_checked = false;
+                        let mut is_blocked = false;
                         let mut idx = square_idx;
 
                         for _ in 0..2 {
                             if self.is_attacked(idx) {
                                 is_checked = true;
+                            }
+
+                            if idx != square_idx && self.get(idx) != EMPTY {
+                                is_blocked = true;
                             }
 
                             if is_king_side_castling {
@@ -796,11 +872,10 @@ impl Chess {
                             && self.remove_color(piece) == ROOK
                             && self.is_friendly(piece)
                             && !is_checked
+                            && !is_blocked
                         {
                             inner_moves.push(destination_idx);
                         }
-
-                        self.update_castling_rights();
                     } else {
                         inner_moves.push(destination_idx);
                     }
@@ -821,7 +896,7 @@ impl Chess {
             if self.is_on_board(destination_idx as u8) {
                 let piece = self.get(destination_idx as PieceIndex);
 
-                if piece != EMPTY && self.is_friendly(piece) {
+                if piece != EMPTY && piece != EN_PASSANT_SQUARE && self.is_friendly(piece) {
                     continue;
                 }
 
@@ -842,7 +917,7 @@ impl Chess {
             while self.is_on_board(destination_idx as PieceIndex) {
                 let piece = self.get(destination_idx as PieceIndex);
 
-                if piece != EMPTY {
+                if piece != EMPTY && piece != EN_PASSANT_SQUARE {
                     // if we encounter a friendly piece, we can't move there
                     if self.is_friendly(piece) {
                         break;
@@ -872,6 +947,7 @@ impl Chess {
                     to_idx, from_idx, ..
                 } = old;
 
+                // TODO: just hardcode the castle squares
                 let king_side = self.is_king_side_castling(from_idx, to_idx);
                 let queen_side = self.is_queen_side_castling(from_idx, to_idx);
 
@@ -912,9 +988,17 @@ impl Chess {
                 }
             }
 
-            // if old.promotion {
+            if old.en_passant_move {
+                let from_idx = old.from_idx;
 
-            // }
+                let idx = match old.to_idx {
+                    i if i < from_idx => old.to_idx + 16,
+                    i if i > from_idx => old.to_idx - 16,
+                    _ => panic!("could not calculate en passant squares"),
+                };
+
+                self.set(EMPTY, idx);
+            }
 
             self.can_black_king_side_castle = old.can_black_king_side_castle;
             self.can_black_queen_side_castle = old.can_black_queen_side_castle;
@@ -1045,7 +1129,7 @@ impl Chess {
     }
 
     pub fn load_fen(&mut self, fen: String) {
-        let fen_parts: Vec<&str> = fen.split(' ').collect();
+        let fen_parts: Vec<&str> = fen.split(" ").collect();
 
         let ranks: Vec<&str> = fen_parts[0].split("/").collect();
 
@@ -1053,13 +1137,29 @@ impl Chess {
         for rank in ranks {
             for piece in rank.chars() {
                 match piece {
-                    'p' => self.set(BLACK_PAWN, BOARD_MAP[idx]),
+                    'p' => {
+                        let rank = 8 - ((BOARD_MAP[idx] >> 4) + 1) + 1;
+
+                        if rank != 7 {
+                            self.set(MOVED_BLACK_PAWN, BOARD_MAP[idx])
+                        } else {
+                            self.set(BLACK_PAWN, BOARD_MAP[idx])
+                        }
+                    }
                     'r' => self.set(BLACK_ROOK, BOARD_MAP[idx]),
                     'n' => self.set(BLACK_KNIGHT, BOARD_MAP[idx]),
                     'b' => self.set(BLACK_BISHOP, BOARD_MAP[idx]),
                     'q' => self.set(BLACK_QUEEN, BOARD_MAP[idx]),
                     'k' => self.set(BLACK_KING, BOARD_MAP[idx]),
-                    'P' => self.set(PAWN, BOARD_MAP[idx]),
+                    'P' => {
+                        let rank = 8 - ((BOARD_MAP[idx] >> 4) + 1) + 1;
+
+                        if rank != 2 {
+                            self.set(MOVED_PAWN, BOARD_MAP[idx])
+                        } else {
+                            self.set(PAWN, BOARD_MAP[idx])
+                        }
+                    }
                     'R' => self.set(ROOK, BOARD_MAP[idx]),
                     'N' => self.set(KNIGHT, BOARD_MAP[idx]),
                     'B' => self.set(BISHOP, BOARD_MAP[idx]),
@@ -1124,6 +1224,11 @@ impl Chess {
 
         self.half_moves = fen_parts[4].parse().unwrap();
         self.full_moves = fen_parts[5].parse().unwrap();
+
+        *self
+            .unique_positions
+            .entry(fen_parts[0].to_string())
+            .or_insert(0) += 1;
     }
 
     /// Return true or false if the color to move is in check
@@ -1160,7 +1265,10 @@ impl Chess {
     }
 
     pub fn is_draw(&mut self) -> bool {
-        self.is_stalemate() || self.is_threefold_repetition() || self.is_50_moves_rule()
+        self.is_stalemate()
+            || self.is_threefold_repetition()
+            || self.is_50_moves_rule()
+            || self.is_insufficient_materials()
     }
 
     /// stalemate happens when a player has no legal inner_moves and is not in check
@@ -1189,7 +1297,10 @@ impl Chess {
     // convert every move to FEN, store it as a unique key in a hashmap
     // if the value >= 3, then it is threefold repetition
     pub fn is_threefold_repetition(&mut self) -> bool {
-        if let Some(count) = self.unique_positions.get(&self.get_fen()) {
+        let fen = self.get_fen();
+        let position = fen.split(" ").collect::<Vec<&str>>()[0];
+
+        if let Some(count) = self.unique_positions.get(position) {
             *count >= 3
         } else {
             false
@@ -1204,7 +1315,7 @@ impl Chess {
         If both sides have any one of the following, and there are no pawns or other pieces on the board:
 
         A lone king
-        a king and bishop
+        a king and bishop (of same colors)
         a king and knight
 
         a king and two knights vs a lone king = draw
@@ -1214,6 +1325,10 @@ impl Chess {
     pub fn is_insufficient_materials(&mut self) -> bool {
         let mut friendly_knights = 0;
         let mut friendly_bishops = 0;
+        let mut friendly_dark_bishops = 0;
+        let mut friendly_light_bishops = 0;
+        let mut enemy_dark_bishops = 0;
+        let mut enemy_light_bishops = 0;
         let mut enemy_knights = 0;
         let mut enemy_bishops = 0;
 
@@ -1223,6 +1338,14 @@ impl Chess {
             }
 
             let piece = self.get(idx);
+            let file = (idx & 7) + 1;
+            let rank = 8 - ((idx >> 4) + 1) + 1;
+
+            // if rank is odd and file is odd = dark
+            // if rank is even and file is even = dark
+
+            // if rank is even and file is odd = light
+            // if rank is odd and file is even = light
 
             if piece != EMPTY {
                 let piece_without_color = self.remove_color(piece);
@@ -1240,6 +1363,24 @@ impl Chess {
                     }
 
                     if piece_without_color == BISHOP {
+                        // dark square bishop
+                        if (rank % 2 != 0 && file % 2 != 0) || (rank % 2 == 0 && file % 2 == 0) {
+                            friendly_dark_bishops += 1;
+
+                            if enemy_light_bishops >= 1 {
+                                return false;
+                            }
+                        }
+
+                        // light square bishop
+                        if (rank % 2 == 0 && file % 2 != 0) || (rank % 2 != 0 && file % 2 == 0) {
+                            friendly_light_bishops += 1;
+
+                            if enemy_dark_bishops >= 1 {
+                                return false;
+                            }
+                        }
+
                         friendly_bishops += 1;
                     }
                 } else {
@@ -1248,6 +1389,25 @@ impl Chess {
                     }
 
                     if piece_without_color == BISHOP {
+                        // dark square bishop
+
+                        if (rank % 2 != 0 && file % 2 != 0) || (rank % 2 == 0 && file % 2 == 0) {
+                            enemy_dark_bishops += 1;
+
+                            if friendly_light_bishops >= 1 {
+                                return false;
+                            }
+                        }
+
+                        // light square bishop
+                        if (rank % 2 == 0 && file % 2 != 0) || (rank % 2 != 0 && file % 2 == 0) {
+                            enemy_light_bishops += 1;
+
+                            if friendly_dark_bishops >= 1 {
+                                return false;
+                            }
+                        }
+
                         enemy_bishops += 1;
                     }
                 }
@@ -1272,7 +1432,7 @@ impl Chess {
         }
 
         if friendly_bishops == 0 && enemy_bishops == 0 {
-            if friendly_knights == 2 || enemy_knights == 2 {
+            if friendly_knights >= 1 && enemy_knights >= 1 {
                 return false;
             }
 
@@ -1287,6 +1447,10 @@ impl Chess {
         for idx in 0..BOARD_SIZE {
             if !self.is_on_board(idx) {
                 continue;
+            }
+
+            if is_attacked {
+                break;
             }
 
             let piece = self.get(idx);
@@ -1330,6 +1494,7 @@ impl Chess {
                                 && destination_idx as PieceIndex == defender_idx
                             {
                                 is_attacked = true;
+                                break;
                             } else {
                                 // check if there is a piece blocking the attack
                                 if piece != EMPTY {
@@ -1397,6 +1562,10 @@ impl Chess {
         notation
     }
 
+    fn reset_half_moves(&mut self) {
+        self.half_moves = 0;
+    }
+
     fn change_turn(&mut self) {
         if self.turn == WHITE {
             self.last_turn = WHITE;
@@ -1432,7 +1601,17 @@ impl Chess {
         self.remove_mask(piece, COLOR_MASK)
     }
 
-    fn get_castling_rights(&self) -> (bool, bool) {
+    /// (white kingside, white queenside, blac kingside, black queenside)
+    pub fn get_castling_rights_tests(&self) -> (bool, bool, bool, bool) {
+        (
+            self.can_white_king_side_castle,
+            self.can_white_queen_side_castle,
+            self.can_black_king_side_castle,
+            self.can_black_queen_side_castle,
+        )
+    }
+
+    pub fn get_castling_rights(&self) -> (bool, bool) {
         if self.turn == WHITE {
             (
                 self.can_white_king_side_castle,

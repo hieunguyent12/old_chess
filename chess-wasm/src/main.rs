@@ -13,11 +13,10 @@ impl<'a> std::fmt::LowerHex for ByteBuf<'a> {
 
 fn main() {
     let mut chess = Chess::new();
-    // let default_position = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+    let fen =
+        "rnbq1rk1/4bpp1/p2p1n1p/Ppp1p3/2B1P3/2NP1N1P/1PP2PP1/R1BQ1RK1 w - b6 0 10".to_string();
 
-    chess.load_fen("8/1P2k3/8/8/8/8/1p5K/8 w - - 0 1".to_string());
+    chess.load_fen(fen);
 
-    chess.move_piece("b8=Q");
-
-    println!("{:?}", chess.get_fen());
+    println!("{:?}", chess.moves("a5"));
 }
