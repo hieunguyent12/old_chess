@@ -27,6 +27,9 @@ pub mod Piece {
     pub const MOVED_BLACK_PAWN: PieceType = MOVED_PAWN | BLACK; // 11000001
     pub const MOVED_KING: PieceType = KING | MOVED_MASK;
 
+    pub const MOVED_ROOK: PieceType = ROOK | MOVED_MASK; //    10000001
+    pub const MOVED_BLACK_ROOK: PieceType = BLACK_ROOK | MOVED_MASK; // 11000001
+
     pub const PAWN: PieceType = 1; //          00000001
     pub const ROOK: PieceType = 2; //          00000010
     pub const KNIGHT: PieceType = 4; //        00000100
@@ -144,6 +147,7 @@ struct HistoryEntry {
     to_idx: PieceIndex,
     from_piece: PieceType,
     to_piece: PieceType,
+    kings: King,
     castle: bool,
     capture: bool,
     turn: u8,
@@ -170,7 +174,7 @@ pub struct Move {
 
 // impl Vec<Move> {}
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct King {
     white: PieceIndex,
     black: PieceIndex,
@@ -207,6 +211,11 @@ pub struct Chess {
     lastest_en_passant_square: Option<String>,
 
     last_turn: u8,
+
+    pub captures: u64,
+    pub castles: u64,
+    pub checks: u64,
+    pub promotions: u64,
 }
 
 impl Chess {
@@ -227,6 +236,10 @@ impl Chess {
             full_moves: 0,
             lastest_en_passant_square: None,
             last_turn: WHITE,
+            captures: 0,
+            castles: 0,
+            checks: 0,
+            promotions: 0,
         }
     }
 
@@ -516,6 +529,7 @@ impl Chess {
                 to_idx,
                 from_piece: piece,
                 to_piece,
+                kings: self.kings.clone(),
                 castle: false,
                 capture: false,
                 en_passant_capture: false,
@@ -586,17 +600,21 @@ impl Chess {
 
                 if can_king_side_castle || can_queen_side_castle {
                     if self.is_king_side_castling(from_idx, to_idx) {
-                        self.set(Piece::ROOK | self.turn, to_idx - 1);
+                        self.set(Piece::ROOK | self.turn | MOVED_MASK, to_idx - 1);
                         self.set(Piece::EMPTY, to_idx + 1);
                         history_entry.castle = true;
+                        self.castles += 1;
                     } else if self.is_queen_side_castling(from_idx, to_idx) {
-                        self.set(Piece::ROOK | self.turn, to_idx + 1);
+                        self.set(Piece::ROOK | self.turn | MOVED_MASK, to_idx + 1);
                         self.set(Piece::EMPTY, to_idx - 2);
                         history_entry.castle = true;
+                        self.castles += 1;
                     }
                 }
             } else if piece_type == MOVED_KING {
                 self.update_kings_position(to_idx);
+            } else if piece_type == ROOK {
+                piece = piece | MOVED_MASK;
             } else {
                 self.half_moves += 1;
             }
@@ -606,6 +624,7 @@ impl Chess {
                     self.capture(to_piece);
                     history_entry.capture = true;
                     self.reset_half_moves();
+                    self.captures += 1;
                 }
             }
 
@@ -622,8 +641,6 @@ impl Chess {
             self.set(Piece::EMPTY, from_idx);
 
             self.history.push(history_entry);
-
-            // self.change_turn();
         } else {
             // panic!("illegal move!")
         }
@@ -775,6 +792,10 @@ impl Chess {
             panic!("can't generate inner_moves for enemy piece, set the turn correctly.");
         }
 
+        if piece == EMPTY || piece == EN_PASSANT_SQUARE {
+            panic!("can't generate moves for empty squares")
+        }
+
         let inner_moves = match self.remove_color(piece) {
             PAWN => self.generate_pawn_moves(square_idx),
             MOVED_PAWN => self.generate_pawn_moves(square_idx),
@@ -784,6 +805,7 @@ impl Chess {
             KNIGHT => self.generate_knight_moves(square_idx),
             KING => self.generate_king_moves(square_idx, KING_DELTAS.to_vec()),
             MOVED_KING => self.generate_king_moves(square_idx, MOVED_KING_DELTAS.to_vec()),
+            MOVED_ROOK => self.generate_sliding_moves(square_idx, ROOK_DELTAS.to_vec()),
             _ => vec![],
         };
 
@@ -845,9 +867,13 @@ impl Chess {
                 }
                 // is it a diagonal move?
                 if delta % 2 != 0 {
-                    let is_enemy = !self.is_friendly(piece);
-                    // if it is, is there an enemy piece it can capture?
-                    if piece == EN_PASSANT_SQUARE {
+                    if self.is_occupied(destination_idx) {
+                        let is_enemy = !self.is_friendly(piece);
+
+                        if is_enemy {
+                            inner_moves.push(destination_idx);
+                        }
+                    } else if piece == EN_PASSANT_SQUARE {
                         if self.turn == WHITE {
                             let below = self.get(destination_idx + 16);
                             if !self.is_friendly(below) && self.get_type(below) == PAWN {
@@ -859,8 +885,6 @@ impl Chess {
                                 inner_moves.push(destination_idx);
                             }
                         }
-                    } else if piece != EMPTY && is_enemy {
-                        inner_moves.push(destination_idx);
                     }
 
                     // let rank = 8 - ((destination_idx as u8 >> 4) + 1) + 1;
@@ -872,7 +896,7 @@ impl Chess {
                     // }
                 } else {
                     // pawn can only forward if it is not blocked by any piece
-                    if piece != EMPTY {
+                    if self.is_occupied(destination_idx) {
                         can_move_forward = false;
                     }
 
@@ -969,7 +993,7 @@ impl Chess {
                         {
                             inner_moves.push(destination_idx);
                         }
-                        self.update_castling_rights();
+                        // self.update_castling_rights();
                     } else {
                         inner_moves.push(destination_idx);
                     }
@@ -990,19 +1014,8 @@ impl Chess {
             if self.is_on_board(destination_idx as u8) {
                 let piece = self.get(destination_idx as PieceIndex);
 
-                // if piece != EMPTY && (self.is_friendly(piece) && piece != EN_PASSANT_SQUARE) {
-                //     continue;
-                // }
-
-                // if piece == EMPTY
-                //     || piece == EN_PASSANT_SQUARE
-                //     || (self.is_friendly(piece) && piece != EN_PASSANT_SQUARE)
-                // {
-                //     inner_moves.push(destination_idx as PieceIndex);
-                // }
-
                 if self.is_occupied(destination_idx as PieceIndex) {
-                    if piece != EN_PASSANT_SQUARE && self.is_friendly(piece) {
+                    if self.is_friendly(piece) {
                         continue;
                     }
                 }
@@ -1117,6 +1130,10 @@ impl Chess {
 
             self.turn = old.turn;
             self.last_turn = old.last_turn;
+
+            self.kings = old.kings.clone();
+
+            // self.update_castling_rights();
 
             self.lastest_en_passant_square = old.en_passant_square;
             if let Some(ep_square) = &self.lastest_en_passant_square {
@@ -1568,7 +1585,10 @@ impl Chess {
             let defender_idx = square_idx;
             let defender_piece = self.get(defender_idx);
 
-            if self.is_friendly(piece) || piece == EMPTY {
+            if (self.is_friendly(piece) && piece != EN_PASSANT_SQUARE)
+                || piece == EMPTY
+                || piece == EN_PASSANT_SQUARE
+            {
                 continue;
             }
 
@@ -1701,6 +1721,11 @@ impl Chess {
             self.inner_move_piece(_move.from, _move.to);
             self.change_turn();
             self.update_castling_rights();
+
+            if self.in_check() {
+                self.checks += 1;
+            }
+
             // if !self.in_check() {
             nodes += self.perft(depth - 1);
             // }
