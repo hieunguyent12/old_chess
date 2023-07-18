@@ -2,7 +2,6 @@ use crate::chess::Piece::*;
 use crate::errors::*;
 use regex::Regex;
 use std::collections::HashMap;
-use wasm_bindgen::prelude::*;
 
 const BOARD_SIZE: u8 = 128;
 const COLOR_MASK: u8 = 128; // 10000000
@@ -17,7 +16,6 @@ pub const BLACK: u8 = 128;
 #[allow(non_snake_case)]
 pub mod Piece {
     use crate::chess::*;
-    use wasm_bindgen::prelude::*;
 
     pub type PieceIndex = u8;
     pub type PieceType = u8;
@@ -216,6 +214,8 @@ pub struct Chess {
     pub castles: u64,
     pub checks: u64,
     pub promotions: u64,
+
+    pub moves: HashMap<String, u64>,
 }
 
 impl Chess {
@@ -232,6 +232,8 @@ impl Chess {
             can_black_king_side_castle: true,
             can_black_queen_side_castle: true,
             unique_positions: HashMap::new(),
+            moves: HashMap::new(),
+
             half_moves: 0,
             full_moves: 0,
             lastest_en_passant_square: None,
@@ -242,7 +244,7 @@ impl Chess {
             promotions: 0,
         }
     }
-
+    // DISREGARD
     pub fn move_piece(&mut self, move_notation: &str) -> Result<String, MoveError> {
         if move_notation.is_empty() {
             return Err(MoveError::InvalidPieceToMove);
@@ -527,7 +529,7 @@ impl Chess {
             let mut history_entry = HistoryEntry {
                 from_idx,
                 to_idx,
-                from_piece: piece,
+                from_piece: self.get(from_idx),
                 to_piece,
                 kings: self.kings.clone(),
                 castle: false,
@@ -579,6 +581,8 @@ impl Chess {
                         self.set(Piece::EMPTY, to_idx + 16);
                     }
 
+                    self.captures += 1;
+
                     history_entry.capture = true;
                     history_entry.en_passant_capture = true;
                     self.reset_half_moves();
@@ -599,12 +603,13 @@ impl Chess {
                 let (can_king_side_castle, can_queen_side_castle) = self.get_castling_rights();
 
                 if can_king_side_castle || can_queen_side_castle {
-                    if self.is_king_side_castling(from_idx, to_idx) {
+                    if self.is_king_side_castling(from_idx, to_idx) && can_king_side_castle {
                         self.set(Piece::ROOK | self.turn | MOVED_MASK, to_idx - 1);
                         self.set(Piece::EMPTY, to_idx + 1);
                         history_entry.castle = true;
                         self.castles += 1;
-                    } else if self.is_queen_side_castling(from_idx, to_idx) {
+                    } else if self.is_queen_side_castling(from_idx, to_idx) && can_queen_side_castle
+                    {
                         self.set(Piece::ROOK | self.turn | MOVED_MASK, to_idx + 1);
                         self.set(Piece::EMPTY, to_idx - 2);
                         history_entry.castle = true;
@@ -649,6 +654,7 @@ impl Chess {
     /// Return the piece on the square
     fn get(&self, square_idx: PieceIndex) -> PieceIndex {
         if !self.is_on_board(square_idx) || square_idx > 150 {
+            println!("lmao");
             panic!("square out of bound");
         }
 
@@ -674,6 +680,7 @@ impl Chess {
         // self.update_castling_rights();
     }
 
+    // DISREGARD
     pub fn moves(&mut self, square: &str) -> Vec<String> {
         let square_idx = BOARD_MAP[self.convert_algebraic_notation_to_index(square) as usize];
 
@@ -863,7 +870,7 @@ impl Chess {
                 let rank = 8 - ((destination_idx as u8 >> 4) + 1) + 1;
 
                 if rank == 1 || rank == 8 {
-                    println!("hi");
+                    // println!("hi");
                 }
                 // is it a diagonal move?
                 if delta % 2 != 0 {
@@ -966,14 +973,49 @@ impl Chess {
                         let mut is_checked = false;
                         let mut is_blocked = false;
                         let mut idx = square_idx;
+                        let mut idx_2 = square_idx;
 
-                        for _ in 0..2 {
-                            if self.is_attacked(idx) {
-                                is_checked = true;
+                        let block_range = if is_king_side_castling {
+                            0..3
+                        } else if is_queen_side_castling {
+                            0..4
+                        } else {
+                            0..2
+                        };
+
+                        let attack_range = if is_king_side_castling {
+                            0..3
+                        } else if is_queen_side_castling {
+                            0..3
+                        } else {
+                            0..2
+                        };
+
+                        for _ in block_range {
+                            // let is_attacked = self.is_attacked(idx);
+
+                            // if is_attacked {
+                            //     is_checked = true;
+                            // }
+
+                            if idx_2 != square_idx && self.get(idx_2) != EMPTY {
+                                is_blocked = true;
                             }
 
-                            if idx != square_idx && self.get(idx) != EMPTY {
-                                is_blocked = true;
+                            if is_king_side_castling {
+                                idx_2 += 1;
+                            }
+
+                            if is_queen_side_castling {
+                                idx_2 -= 1;
+                            }
+                        }
+
+                        for _ in attack_range {
+                            let is_attacked = self.is_attacked(idx);
+
+                            if is_attacked {
+                                is_checked = true;
                             }
 
                             if is_king_side_castling {
@@ -1155,6 +1197,7 @@ impl Chess {
         black pieces = lowercase
         white = uppercase
         empty square = number
+
     */
     pub fn get_fen(&self) -> String {
         let mut fen = String::from("");
@@ -1369,6 +1412,7 @@ impl Chess {
         return self.is_attacked(king_idx);
     }
 
+    // DISREGARD
     pub fn is_checkmate(&mut self) -> bool {
         let mut no_legal_moves = true;
 
@@ -1390,14 +1434,14 @@ impl Chess {
 
         self.in_check() && no_legal_moves
     }
-
+    // DISREGARD
     pub fn is_draw(&mut self) -> bool {
         self.is_stalemate()
             || self.is_threefold_repetition()
             || self.is_50_moves_rule()
             || self.is_insufficient_materials()
     }
-
+    // DISREGARD
     /// stalemate happens when a player has no legal inner_moves and is not in check
     pub fn is_stalemate(&mut self) -> bool {
         let mut no_legal_moves = true;
@@ -1433,11 +1477,11 @@ impl Chess {
             false
         }
     }
-
+    // DISREGARD
     pub fn is_50_moves_rule(&mut self) -> bool {
         self.half_moves >= 100
     }
-
+    // DISREGARD
     /*
         If both sides have any one of the following, and there are no pawns or other pieces on the board:
 
@@ -1610,7 +1654,8 @@ impl Chess {
                         return true;
                     } else if piece_type == PAWN {
                         let piece = self.remove_mask(piece, MOVED_MASK);
-                        is_attacked = piece & attack_bits_mask == piece;
+                        is_attacked = (piece & attack_bits_mask == piece)
+                            && self.get_color(attack_bits_mask) == self.get_color(piece);
                     } else {
                         // check if there is a piece standing in the way of the attack
                         let delta = DELTAS[diff as usize];
@@ -1619,7 +1664,7 @@ impl Chess {
 
                         while self.is_on_board(destination_idx as PieceIndex) {
                             let piece = self.get(destination_idx as PieceIndex);
-
+                            // 11000001
                             if piece == defender_piece
                                 && destination_idx as PieceIndex == defender_idx
                             {
@@ -1693,32 +1738,23 @@ impl Chess {
     }
 
     // https://www.chessprogramming.org/Perft
-    pub fn perft(&mut self, depth: u8) -> u64 {
+    pub fn perft(&mut self, depth: u8, yah: bool) -> u64 {
         let mut nodes: u64 = 0;
+        let mut cnt = 0;
 
         if depth <= 0 {
+            cnt = 1;
             return 1;
         }
 
         let moves = self.generate_legal_moves();
 
         for _move in moves {
-            // if _move.to > 150 {
-            //     continue;
-            // }
-            // if _move.is_empty() {
-            //     continue;
-            // }
-
-            // let a = self.move_piece(_move.as_str());
-
-            // match a {
-            //     Ok(_) => {}
-            //     Err(msg) => {
-            //         println!("{}", msg)
-            //     }
-            // }
             self.inner_move_piece(_move.from, _move.to);
+
+            let from = self.convert_index_algebraic_notation(_move.from);
+            let to = self.convert_index_algebraic_notation(_move.to);
+
             self.change_turn();
             self.update_castling_rights();
 
@@ -1726,9 +1762,14 @@ impl Chess {
                 self.checks += 1;
             }
 
-            // if !self.in_check() {
-            nodes += self.perft(depth - 1);
-            // }
+            cnt = self.perft(depth - 1, false);
+            nodes += cnt;
+
+            if yah {
+                println!("{} {}", format!("{}{}", from, to), cnt);
+
+                *self.moves.entry(format!("{}{}", from, to)).or_insert(0) = cnt;
+            }
 
             self.undo()
         }
@@ -1777,7 +1818,7 @@ impl Chess {
         self.half_moves = 0;
     }
 
-    fn change_turn(&mut self) {
+    pub fn change_turn(&mut self) {
         if self.turn == WHITE {
             self.last_turn = WHITE;
             self.set_turn(BLACK);
@@ -1842,7 +1883,7 @@ impl Chess {
         }
     }
 
-    fn update_castling_rights(&mut self) {
+    pub fn update_castling_rights(&mut self) {
         if self.kings.white != 116 {
             self.can_white_king_side_castle = false;
             self.can_white_queen_side_castle = false;
