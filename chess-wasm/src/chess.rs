@@ -1743,7 +1743,9 @@ impl Chess {
         let mut cnt = 0;
 
         if depth <= 0 {
-            cnt = 1;
+            if self.in_check() {
+                self.checks += 1;
+            }
             return 1;
         }
 
@@ -1758,10 +1760,6 @@ impl Chess {
             self.change_turn();
             self.update_castling_rights();
 
-            if self.in_check() {
-                self.checks += 1;
-            }
-
             cnt = self.perft(depth - 1, false);
             nodes += cnt;
 
@@ -1769,6 +1767,7 @@ impl Chess {
                 println!("{} {}", format!("{}{}", from, to), cnt);
 
                 *self.moves.entry(format!("{}{}", from, to)).or_insert(0) = cnt;
+            } else {
             }
 
             self.undo()

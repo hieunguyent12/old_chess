@@ -4,7 +4,7 @@ import TheWelcome from "./components/TheWelcome.vue";
 import YeetStuff from "./components/YeetStuff.vue";
 import { computed, reactive, ref } from "vue";
 
-import { greet } from "chess-wasm";
+import { New as LMAO } from "chess-wasm";
 
 let dumb = 0;
 
@@ -22,7 +22,11 @@ let count2 = reactive({ count: 0 });
 
 function updateCount() {
   // init.greet();
-  greet();
+  // greet();
+
+  let a = LMAO.new();
+
+  console.log(a.get_test());
 }
 
 const isOdd = computed(() => {
