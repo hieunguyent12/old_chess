@@ -1,10 +1,19 @@
-use chess_wasm::chess2::{Chess, Color, PieceType as Piece, Square};
+use chess_wasm::chess2::{Chess, Color, PieceType as Piece, SquareCoordinate as Square};
+
+#[derive(Clone, PartialEq)]
+#[repr(u8)]
+pub enum MoveType {
+    Normal = 0,
+    EnPassantMove = 1,
+    Capture = 2,
+    EnPassantCapture = 4,
+    CastleKingside = 8,
+    CastleQueenside = 16,
+    Promotion = 32,
+}
 
 fn main() {
-    let mut chess = Chess::new();
+    let a = MoveType::Normal;
 
-    match chess.set(Square::E1, Piece::KING, Color::WHITE) {
-        Ok(_) => println!("{:?}", chess.board),
-        Err(msg) => println!("{}", msg),
-    };
+    println!("{}", a == MoveType::Normal);
 }

@@ -1,7 +1,7 @@
-use thiserror::Error;
+// use std::error::Errsor;
 
-#[derive(Error, Debug, PartialEq, Eq)]
-pub enum MoveError {
+#[derive(thiserror::Error, Debug, PartialEq, Eq)]
+pub enum ChessError {
     #[error("Illegal king side castle")]
     IllegalKingSideCastle,
 
@@ -17,18 +17,18 @@ pub enum MoveError {
     #[error("Ambiguous move notation")]
     AmbiguousMoveNotation,
 
-    #[error("Can't find PieceType to move")]
-    InvalidPieceToMove,
+    #[error("Invalid move (from: {0} to {1})")]
+    InvalidMove(usize, usize),
 
     #[error("Invalid promotion")]
     InvalidPromotion,
-}
 
-#[derive(Error, Debug, PartialEq, Eq)]
-pub enum Error {
     #[error("Invalid index {0}")]
     InvalidIndex(usize),
 
     #[error("Invalid PieceType type")]
     InvalidPieceType,
+
+    #[error("Unexpected error: {0}")]
+    UnknownError(String),
 }

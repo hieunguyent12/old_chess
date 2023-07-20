@@ -1,6 +1,6 @@
 use super::constants::*;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Piece {
     pub piece_type: PieceType,
     pub color: Color,
