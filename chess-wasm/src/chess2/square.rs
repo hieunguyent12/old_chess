@@ -96,7 +96,7 @@ impl SquareCoordinate {
     }
 }
 
-trait SquareCoordinateExt {
+pub trait SquareCoordinateExt {
     fn to_coordinate(&self) -> SquareCoordinate;
 }
 

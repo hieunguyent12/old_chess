@@ -19,9 +19,11 @@ impl MoveType {
     }
 }
 
+#[derive(Debug)]
 pub struct Move {
-    from: SquareCoordinate,
-    to: SquareCoordinate,
+    pub from: SquareCoordinate,
+    pub to: SquareCoordinate,
+    pub promotion_piece: Option<Piece>,
 }
 
 #[derive(Clone)]
@@ -33,10 +35,14 @@ pub struct InternalMove {
     pub from_piece: Piece,
     pub to_sq: SquareCoordinate,
     pub to_piece: Option<Piece>,
-    // pub capture: bool,
-    // pub en_passant_capture: bool,
-    // pub en_passant_move: bool,
-    // pub castle: Option<Castling>,
-    // pub promotion: bool,
     pub promotion_piece: Option<Piece>,
 }
+
+// impl InternalMove {
+//     pub fn new() -> Self {
+//         Self {
+//             move_type: MoveType::Normal,
+
+//         }
+//     }
+// }
