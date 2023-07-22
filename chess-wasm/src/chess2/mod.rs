@@ -516,12 +516,11 @@ impl Chess {
                 if is_castling {
                     let mut allow_castle = true;
                     let range = match diff {
-                        2 => Ok(0..2),
-                        -2 => Ok(0..3),
+                        2 => Ok(0..2),  // kingside (2 squares to check)
+                        -2 => Ok(0..3), // queenside (3 squares to check)
                         _ => Err(ChessError::UnknownError("Illegal castle".to_string())),
                     }?;
 
-                    // kingside
                     for offset in range {
                         let offset = (offset + 1 + from_idx) as u8;
 
@@ -531,9 +530,12 @@ impl Chess {
                         }
 
                         // if king is attacked on the path, we can't castle
+                        if self.is_attacked(offset.to_coordinate())? {
+                            allow_castle = false;
+                        }
                     }
 
-                    if !allow_castle {
+                    if !allow_castle || self.in_check()? {
                         continue;
                     }
                 }
