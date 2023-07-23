@@ -6,7 +6,7 @@ use super::utils::{self, *};
 
 #[derive(Debug)]
 pub struct Board {
-    _board: Vec<Square>,
+    pub _board: Vec<Square>,
 }
 
 impl Board {

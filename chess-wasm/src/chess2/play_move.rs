@@ -1,6 +1,6 @@
 use super::{piece::Piece, SquareCoordinate};
 
-#[derive(Clone, PartialEq, Copy)]
+#[derive(Clone, PartialEq, Copy, Debug)]
 #[repr(u8)]
 pub enum MoveType {
     Normal = 0,
@@ -19,14 +19,14 @@ impl MoveType {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct Move {
     pub from: SquareCoordinate,
     pub to: SquareCoordinate,
     pub promotion_piece: Option<Piece>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 /// Represent a player move.
 pub struct InternalMove {
     pub move_type: MoveType,

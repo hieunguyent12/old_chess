@@ -3,7 +3,7 @@ use super::{
     play_move::InternalMove,
     Color, Kings, Piece, PieceType, SquareCoordinate,
 };
-
+#[derive(Debug)]
 pub struct HistoryEntry {
     pub player_move: InternalMove,
     pub turn: Color,
@@ -14,8 +14,9 @@ pub struct HistoryEntry {
     pub en_passant_sq: Option<SquareCoordinate>,
 }
 
+#[derive(Debug)]
 pub struct MoveHistory {
-    entries: Vec<HistoryEntry>,
+    pub entries: Vec<HistoryEntry>,
 }
 
 impl MoveHistory {

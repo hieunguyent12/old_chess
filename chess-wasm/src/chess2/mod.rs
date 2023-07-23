@@ -15,23 +15,26 @@ use history::*;
 use piece::*;
 use play_move::*;
 use square::*;
-use std::collections::HashMap;
+use std::ops::Range;
+use std::{collections::HashMap, hash::Hash};
 use utils::*;
 
 pub use constants::Color;
 pub use piece::PieceType;
 pub use piece::*;
+pub use play_move::Move;
 pub use play_move::*;
 pub use square::SquareCoordinate;
+pub use square::*;
 
 use crate::chess::Piece::ROOK;
 
 use self::constants::{
-    BISHOP_DELTAS, BLACK_PAWN_DELTAS, COLOR_MASK, KING_DELTAS, KNIGHT_DELTAS, QUEEN_DELTAS,
-    ROOK_DELTAS, WHITE_PAWN_DELTAS,
+    BISHOP_DELTAS, BLACK_PAWN_DELTAS, BOARD_MAP, BOARD_SIZE, COLOR_MASK, KING_DELTAS,
+    KNIGHT_DELTAS, QUEEN_DELTAS, ROOK_DELTAS, WHITE_PAWN_DELTAS,
 };
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Kings {
     white: Option<SquareCoordinate>,
     black: Option<SquareCoordinate>,
@@ -53,12 +56,14 @@ pub struct Chess {
     // unique_positions: HashMap<String, u8>,
     half_moves: u8,
     full_moves: u8,
-    en_passant_sq: Option<SquareCoordinate>,
-    // _testing_captures: u64,
-    // _testing_castles: u64,
-    // _testing_checks: u64,
-    // _testing_promotions: u64,
-    // _testing_moves: HashMap<String, u64>,
+    pub en_passant_sq: Option<SquareCoordinate>,
+
+    pub moves: HashMap<String, u64>,
+    pub promos: u64, // _testing_captures: u64,
+                     // _testing_castles: u64,
+                     // _testing_checks: u64,
+                     // _testing_promotions: u64,
+                     // _testing_moves: HashMap<String, u64>,
 }
 
 impl Chess {
@@ -77,6 +82,8 @@ impl Chess {
             black_captures: vec![],
             full_moves: 0,
             half_moves: 0,
+            moves: HashMap::new(),
+            promos: 0,
         }
     }
 
@@ -149,7 +156,9 @@ impl Chess {
         }
 
         if m.move_type == MoveType::Promotion {
-            let promotion_piece = m.promotion_piece.ok_or(ChessError::InvalidPromotion)?;
+            let promotion_piece = m
+                .promotion_piece
+                .ok_or(ChessError::UnknownError(format!("yah yeet")))?;
             self.set(m.to_sq, promotion_piece.piece_type, promotion_piece.color)?;
         }
 
@@ -213,7 +222,7 @@ impl Chess {
                 self.set(m.to_sq.subtract(2)?, PieceType::ROOK, m.from_piece.color)?;
             }
 
-            if m.move_type == MoveType::Capture {
+            if m.move_type == MoveType::Capture || m.to_piece.is_some() {
                 if let Some(to_piece) = m.to_piece {
                     // put the captured piece back
                     self.set(m.to_sq, to_piece.piece_type, to_piece.color)?;
@@ -237,20 +246,47 @@ impl Chess {
         let piece = self.get(sq)?.ok_or(ChessError::UnknownError(
             "Can't generate moves for empty square".to_string(),
         ))?;
-
-        match piece.piece_type {
+        let mut legal_moves = vec![];
+        let pseudo_legal_moves = match piece.piece_type {
             PieceType::KING => self.king_moves(sq),
             PieceType::QUEEN => self.sliding_moves(sq, QUEEN_DELTAS.to_vec()),
             PieceType::ROOK => self.sliding_moves(sq, ROOK_DELTAS.to_vec()),
             PieceType::BISHOP => self.sliding_moves(sq, BISHOP_DELTAS.to_vec()),
             PieceType::KNIGHT => self.knight_moves(sq),
             PieceType::PAWN => self.pawn_moves(sq),
+        }?;
+
+        for _move in pseudo_legal_moves {
+            self.make_move(_move)?;
+            if !self.in_check()? {
+                legal_moves.push(_move);
+            }
+
+            self.undo_move()?;
         }
+
+        Ok(legal_moves)
     }
 
     /// Get all legal moves for the player to move
-    pub fn moves() {}
+    pub fn moves(&mut self) -> ChessResult<Vec<Move>> {
+        let mut moves = vec![];
 
+        for idx in 0..BOARD_SIZE {
+            if let Ok(idx) = self.board.is_valid(idx) {
+                if let Some(piece) = self.get((idx as u8).to_coordinate())? {
+                    if self.is_friendly(piece) {
+                        let mut a = self.moves_for_square((idx as u8).to_coordinate())?;
+                        moves.append(&mut a);
+                    }
+                }
+            }
+        }
+
+        Ok(moves)
+    }
+
+    /// Return true if the current player to move is in check
     pub fn in_check(&self) -> ChessResult<bool> {
         if self.turn == Color::WHITE {
             if let Some(king) = self.kings.white {
@@ -271,20 +307,28 @@ impl Chess {
         let from_idx = from.to_index();
         let from_piece = self.get(from)?;
 
+        let mut is_empty = false;
+
         for delta in sliding_attack_deltas {
             let mut to = from.to_index() as i16 + delta as i16;
+
+            // if is_empty {
+            //     break;
+            // }
 
             loop {
                 if let Ok(_to) = utils::is_valid(to as usize) {
                     let to_sq = (_to as u8).to_coordinate();
 
                     if let Some(attacker) = self.get(to_sq)? {
+                        if attacker.color == self.turn {
+                            break;
+                        }
+
                         if let Some(from_piece) = from_piece {
                             if from_piece.color == attacker.color {
                                 break;
                             }
-                        } else {
-                            return Ok(false);
                         }
 
                         let diff = from_idx as i16 - to + 119;
@@ -292,15 +336,21 @@ impl Chess {
 
                         if attack_bits_mask != 0 {
                             if attacker.piece_type == PieceType::PAWN {
-                                // let with_color =
-                                //     attacker.piece_type.to_value() | attacker.color.to_value();
+                                let with_color =
+                                    attacker.piece_type.to_value() | attacker.color.to_value();
 
-                                if attacker.color.to_value() == attack_bits_mask & COLOR_MASK {
+                                if with_color & attack_bits_mask != 0
+                                    && attacker.color.to_value() == attack_bits_mask & COLOR_MASK
+                                {
                                     return Ok(true);
+                                } else {
+                                    break;
                                 }
                             } else {
                                 if (attacker.piece_type.to_value() & attack_bits_mask) != 0 {
                                     return Ok(true);
+                                } else {
+                                    break;
                                 }
                             }
                         }
@@ -324,8 +374,6 @@ impl Chess {
                         return Ok(true);
                     }
                 }
-            } else {
-                continue;
             }
         }
 
@@ -359,7 +407,7 @@ impl Chess {
         let s = self.board.set(sq, piece, color)?;
 
         if piece == PieceType::KING {
-            self.update_kings_positions(sq);
+            self.update_kings_positions(sq, color);
         }
 
         Ok(s)
@@ -371,7 +419,224 @@ impl Chess {
 
     pub fn get_fen() {}
 
-    pub fn load_fen() {}
+    pub fn load_fen(&mut self, fen: String) -> ChessResult<()> {
+        let fen_parts: Vec<&str> = fen.split(" ").collect();
+
+        let ranks: Vec<&str> = fen_parts[0].split("/").collect();
+
+        let mut idx: usize = 0;
+        for rank in ranks {
+            for piece in rank.chars() {
+                let coord = (BOARD_MAP[idx] as u8).to_coordinate();
+                match piece {
+                    'p' => {
+                        self.set(coord, PieceType::PAWN, Color::BLACK)?;
+                    }
+                    'r' => {
+                        self.set(coord, PieceType::ROOK, Color::BLACK)?;
+                    }
+                    'n' => {
+                        self.set(coord, PieceType::KNIGHT, Color::BLACK)?;
+                    }
+                    'b' => {
+                        self.set(coord, PieceType::BISHOP, Color::BLACK)?;
+                    }
+                    'q' => {
+                        self.set(coord, PieceType::QUEEN, Color::BLACK)?;
+                    }
+                    'k' => {
+                        self.set(coord, PieceType::KING, Color::BLACK)?;
+                    }
+                    'P' => {
+                        self.set(coord, PieceType::PAWN, Color::WHITE)?;
+                    }
+                    'R' => {
+                        self.set(coord, PieceType::ROOK, Color::WHITE)?;
+                    }
+                    'N' => {
+                        self.set(coord, PieceType::KNIGHT, Color::WHITE)?;
+                    }
+                    'B' => {
+                        self.set(coord, PieceType::BISHOP, Color::WHITE)?;
+                    }
+                    'Q' => {
+                        self.set(coord, PieceType::QUEEN, Color::WHITE)?;
+                    }
+                    'K' => {
+                        self.set(coord, PieceType::KING, Color::WHITE)?;
+                    }
+                    '1'..='8' => idx += piece.to_digit(10).unwrap() as usize - 1,
+                    _ => panic!("can't load fen pieces"),
+                }
+
+                idx += 1;
+            }
+        }
+
+        // set turn
+        match fen_parts[1] {
+            "w" => self.set_turn(Color::WHITE),
+            "b" => self.set_turn(Color::BLACK),
+            _ => panic!("can't load fen turn"),
+        }
+
+        // castling rights
+        for castling_right in fen_parts[2].chars() {
+            match castling_right {
+                'K' => {
+                    self.castling_rights.white.kingside = true;
+                }
+                'Q' => {
+                    self.castling_rights.white.queenside = true;
+                }
+                'k' => {
+                    self.castling_rights.black.kingside = true;
+                }
+                'q' => {
+                    self.castling_rights.black.queenside = true;
+                }
+
+                '-' => {
+                    self.castling_rights.white.kingside = false;
+                    self.castling_rights.white.queenside = false;
+                    self.castling_rights.black.kingside = false;
+                    self.castling_rights.black.kingside = false;
+                }
+                _ => panic!("cant load fen castling rights"),
+            }
+        }
+
+        // en passant square
+        let square = fen_parts[3];
+
+        match square {
+            // no en passant square
+            "-" => {
+                self.en_passant_sq = None;
+            }
+            _ => {
+                let idx =
+                    BOARD_MAP[self.convert_algebraic_notation_to_index(square) as usize] as u8;
+                self.en_passant_sq = Some(idx.to_coordinate());
+            }
+        }
+
+        self.half_moves = fen_parts[4].parse().unwrap();
+        self.full_moves = fen_parts[5].parse().unwrap();
+
+        // *self
+        //     .unique_positions
+        //     .entry(fen_parts[0].to_string())
+        //     .or_insert(0) += 1;
+
+        Ok(())
+    }
+
+    pub fn convert_algebraic_notation_to_index(&self, notation: &str) -> u8 {
+        let mut parts = notation.chars();
+
+        let file = parts.next().unwrap();
+        let rank = (parts.next().unwrap().to_digit(10).unwrap() - 1) as u8;
+
+        let file = constants::FILES
+            .iter()
+            .position(|f| f.eq(&file.to_string().as_str()))
+            .unwrap() as u8;
+
+        // we minus rank from 7 because the board is reversed (upside down)
+        // so for example, for "e7", the rank 7 is rank 1 on our board
+        (8 * (7 - rank) + file) as u8
+    }
+
+    pub fn convert_index_algebraic_notation(&self, index: u8) -> String {
+        let file = index & 7;
+        let rank = 8 - ((index >> 4) + 1) + 1;
+
+        let file_letter = constants::FILES[file as usize];
+
+        let mut notation = String::new();
+
+        notation.push_str(file_letter);
+        notation.push_str(rank.to_string().as_str());
+
+        notation
+    }
+
+    pub fn perft(&mut self, depth: u8, yah: bool, promo: bool) -> ChessResult<u64> {
+        let mut nodes: u64 = 0;
+        let mut cnt = Ok(0);
+
+        let moves = self.moves()?;
+
+        if depth <= 0 {
+            if promo {
+                self.promos += 1;
+            }
+            // if self.in_check() {
+            //     self.checks += 1;
+            // }
+            return Ok(1);
+            // return Ok(moves.len() as u64);
+        }
+
+        for _move in moves {
+            let from = self.convert_index_algebraic_notation(_move.from.to_index() as u8);
+            let to = self.convert_index_algebraic_notation(_move.to.to_index() as u8);
+
+            self.make_move(_move)?;
+            self.change_turn();
+
+            cnt = self.perft(depth - 1, false, _move.promotion_piece.is_some());
+
+            if let Ok(cnt) = cnt {
+                nodes += cnt;
+
+                if yah {
+                    if let Some(promotion_piece) = _move.promotion_piece {
+                        match promotion_piece.piece_type {
+                            PieceType::BISHOP => {
+                                println!("{} {}", format!("{}{}b", from, to), cnt);
+
+                                *self.moves.entry(format!("{}{}b", from, to)).or_insert(0) = cnt;
+                            }
+                            PieceType::KNIGHT => {
+                                println!("{} {}", format!("{}{}n", from, to), cnt);
+                                *self.moves.entry(format!("{}{}n", from, to)).or_insert(0) = cnt;
+                            }
+                            PieceType::ROOK => {
+                                println!("{} {}", format!("{}{}r", from, to), cnt);
+                                *self.moves.entry(format!("{}{}r", from, to)).or_insert(0) = cnt;
+                            }
+                            PieceType::QUEEN => {
+                                println!("{} {}", format!("{}{}q", from, to), cnt);
+                                *self.moves.entry(format!("{}{}q", from, to)).or_insert(0) = cnt;
+                            }
+                            _ => panic!("invalid promotion piece"),
+                        }
+                    } else {
+                        println!("{} {}", format!("{}{}", from, to), cnt);
+
+                        *self.moves.entry(format!("{}{}", from, to)).or_insert(0) = cnt;
+                    }
+                }
+            } else {
+                panic!(
+                    "depth {} mvoe {:?} piece {:?} error {:?}",
+                    depth,
+                    _move,
+                    self.get(_move.from),
+                    cnt
+                );
+            }
+            self.undo_move()?;
+        }
+
+        return Ok(nodes);
+    }
+
+    fn set_turn(&mut self, color: Color) {
+        self.turn = color;
+    }
 
     fn castling_rights_for_turn(&self) -> (bool, bool) {
         if self.turn == Color::WHITE {
@@ -395,8 +660,8 @@ impl Chess {
         ))?;
 
         let deltas = match from_piece.color {
-            Color::BLACK => WHITE_PAWN_DELTAS,
-            Color::WHITE => BLACK_PAWN_DELTAS,
+            Color::BLACK => BLACK_PAWN_DELTAS,
+            Color::WHITE => WHITE_PAWN_DELTAS,
         };
 
         let mut can_move_forward = true;
@@ -405,17 +670,58 @@ impl Chess {
             let to = from.to_index() as i16 + delta as i16;
             if let Ok(_to) = utils::is_valid(to as usize) {
                 let to_sq = (_to as u8).to_coordinate();
+                let rank = to_sq.rank();
 
                 if delta % 2 != 0 {
                     // normal capture
                     if let Some(attacker) = self.get(to_sq)? {
                         if !self.is_friendly(attacker) {
-                            moves.push(Move {
-                                from,
-                                to: to_sq,
-                                promotion_piece: None,
-                            });
+                            // promotion
+                            if rank == 1 || rank == 8 {
+                                let color = from_piece.color;
+                                let promotion_pieces = vec![
+                                    Piece {
+                                        piece_type: PieceType::BISHOP,
+                                        color,
+                                    },
+                                    Piece {
+                                        piece_type: PieceType::KNIGHT,
+                                        color,
+                                    },
+                                    Piece {
+                                        piece_type: PieceType::ROOK,
+                                        color,
+                                    },
+                                    Piece {
+                                        piece_type: PieceType::QUEEN,
+                                        color,
+                                    },
+                                ];
+
+                                for piece in promotion_pieces {
+                                    moves.push(Move {
+                                        from,
+                                        to: to_sq,
+                                        promotion_piece: Some(piece),
+                                    })
+                                }
+                            } else {
+                                moves.push(Move {
+                                    from,
+                                    to: to_sq,
+                                    promotion_piece: None,
+                                });
+                            }
                         }
+                    }
+
+                    // en passant capture
+                    if self.en_passant_sq == Some(to_sq) {
+                        moves.push(Move {
+                            from,
+                            to: to_sq,
+                            promotion_piece: None,
+                        });
                     }
                 } else {
                     if self.get(to_sq)?.is_some() {
@@ -426,7 +732,7 @@ impl Chess {
                         continue;
                     }
 
-                    let rank = to_sq.rank();
+                    let rank = from.rank();
                     // can only do en passant move if rank is 2 for white or 7 for black
                     if to.abs_diff(from.to_index() as i16) == 32 {
                         if from_piece.color == Color::WHITE && rank == 2 {
@@ -444,9 +750,11 @@ impl Chess {
                                 promotion_piece: None,
                             });
                         }
+                        continue;
                     }
 
-                    // promotion
+                    let rank = to_sq.rank();
+
                     if rank == 1 || rank == 8 {
                         let color = from_piece.color;
                         let promotion_pieces = vec![
@@ -475,6 +783,12 @@ impl Chess {
                                 promotion_piece: Some(piece),
                             })
                         }
+                    } else {
+                        moves.push(Move {
+                            from,
+                            to: to_sq,
+                            promotion_piece: None,
+                        })
                     }
                 }
             } else {
@@ -492,7 +806,9 @@ impl Chess {
 
         let deltas = KING_DELTAS.to_vec();
         let (can_castle_kingside, can_castle_queenside) = self.castling_rights_for_turn();
-        let from_idx = from.to_index();
+        let from_idx = from.to_index() as i8;
+
+        let is_in_check = self.in_check()?;
 
         for delta in deltas {
             let to = from.to_index() as i16 + delta as i16;
@@ -513,33 +829,6 @@ impl Chess {
                     continue;
                 }
 
-                if is_castling {
-                    let mut allow_castle = true;
-                    let range = match diff {
-                        2 => Ok(0..2),  // kingside (2 squares to check)
-                        -2 => Ok(0..3), // queenside (3 squares to check)
-                        _ => Err(ChessError::UnknownError("Illegal castle".to_string())),
-                    }?;
-
-                    for offset in range {
-                        let offset = (offset + 1 + from_idx) as u8;
-
-                        // if a piece is blocking the path, we can't castle
-                        if self.get(offset.to_coordinate())?.is_some() {
-                            allow_castle = false;
-                        }
-
-                        // if king is attacked on the path, we can't castle
-                        if self.is_attacked(offset.to_coordinate())? {
-                            allow_castle = false;
-                        }
-                    }
-
-                    if !allow_castle || self.in_check()? {
-                        continue;
-                    }
-                }
-
                 if let Some(piece) = self.get(to_sq)? {
                     // if we encounter a friendly piece, we can't move there
                     if self.is_friendly(piece) {
@@ -547,11 +836,48 @@ impl Chess {
                     }
                 }
 
-                moves.push(Move {
-                    from,
-                    to: to_sq,
-                    promotion_piece: None,
-                });
+                if is_castling {
+                    let mut allow_castle = true;
+                    let range: Range<i8> = match diff {
+                        2 => Ok(0..2),    // kingside (2 squares to check)
+                        -2 => Ok(-4..-1), // queenside (3 squares to check)
+                        _ => Err(ChessError::UnknownError("Illegal castle".to_string())),
+                    }?;
+
+                    for offset in range {
+                        let offset = (offset + 1 + from_idx) as u8;
+                        let coord = offset.to_coordinate();
+
+                        // if a piece is blocking the path, we can't castle
+                        if self.get(coord)?.is_some() {
+                            allow_castle = false;
+                            break;
+                        }
+                        let a = 1;
+                        let attacked = self.is_attacked(coord)?;
+                        // if king is attacked on the path, we can't castle
+                        if attacked
+                            && (coord != SquareCoordinate::B1 && coord != SquareCoordinate::B8)
+                        {
+                            allow_castle = false;
+                            break;
+                        }
+                    }
+
+                    if allow_castle && !is_in_check {
+                        moves.push(Move {
+                            from,
+                            to: to_sq,
+                            promotion_piece: None,
+                        });
+                    }
+                } else {
+                    moves.push(Move {
+                        from,
+                        to: to_sq,
+                        promotion_piece: None,
+                    });
+                }
             } else {
                 continue;
             }
@@ -673,7 +999,7 @@ impl Chess {
 
             let rank = m.to.rank();
             // promotion
-            if rank == 8 || rank == 1 {
+            if (rank == 8 || rank == 1) {
                 internal_move.move_type = MoveType::Promotion;
                 internal_move.promotion_piece = m.promotion_piece;
             }
@@ -698,8 +1024,8 @@ impl Chess {
         self.turn == piece.color
     }
 
-    fn update_kings_positions(&mut self, new_sq: SquareCoordinate) {
-        if self.turn == Color::WHITE {
+    fn update_kings_positions(&mut self, new_sq: SquareCoordinate, color: Color) {
+        if color == Color::WHITE {
             self.kings.white = Some(new_sq)
         } else {
             self.kings.black = Some(new_sq)

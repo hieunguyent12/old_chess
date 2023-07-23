@@ -1,12 +1,12 @@
 use super::{utils::ChessResult, Board, Color, Kings, PieceType, SquareCoordinate};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Castling {
     pub kingside: bool,
     pub queenside: bool,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct CastlingRights {
     pub white: Castling,
     pub black: Castling,
